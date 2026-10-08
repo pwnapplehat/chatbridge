@@ -19,6 +19,15 @@ Per profile (`~/.config/Cursor/User`, or `<--user-data-dir>/User`):
 
 Writing a chat creates the three record kinds above, shaped from `chatbridge/data/cursor_templates.json` (generated from a real chat by `scripts/gen_cursor_templates.py`). Claude-origin tool calls are written MCP-style (`name = mcp-claude-<tool>`, server `claude`).
 
+## Cursor agent state (experimental)
+
+What the model is sent when you continue a chat is *not* the bubbles. Cursor keeps:
+
+- `agentKv:blob:<sha256>` rows: content-addressed, plain compact JSON messages in an AI-SDK style: `{"role":"system"|"user"|"assistant"|"tool","content":…}`. Assistant content parts are `text`, `reasoning` (provider-signed, not forgeable), `tool-call {toolCallId, toolName, args}`; tool messages hold `tool-result {toolCallId, toolName, result, experimental_content}` with `providerOptions.cursor.highLevelToolCallResult`. The key is the sha256 of the stored bytes.
+- `composerData.conversationState` = `"~" + base64(protobuf)`: field 1 repeats the 32-byte hashes of the messages in order (system prompt, a large environment/rules message, then user/assistant/tool messages); further fields hold per-turn metadata (token usage in 5, format version 10, timestamp 26, todo/file-state blobs…).
+
+ChatBridge writes field 1 (+ 5, 10, 26) for chats it creates, with the first two messages borrowed from the profile's newest native chat. This mapping was reverse-engineered from a real profile and is unverified against future Cursor versions; the option is off by default.
+
 ## Claude
 
 - `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`: the conversation log, one JSON object per line. Conversation entries have `type` `user`/`assistant`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `message`. Other line types (`queue-operation`, `attachment`, `system`, `custom-title`, `last-prompt`, …) are not conversation.

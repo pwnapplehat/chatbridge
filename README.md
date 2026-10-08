@@ -30,8 +30,8 @@ Cursor and Claude each keep their chat history in their own format. If you start
 
 ```bash
 git clone https://github.com/pwnapplehat/chatbridge.git && cd chatbridge
-packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.0.2_all.deb (no root needed)
-sudo apt install ./dist/chatbridge_1.0.2_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
+packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.0_all.deb (no root needed)
+sudo apt install ./dist/chatbridge_1.1.0_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
 systemctl --user enable --now chatbridge-sync   # optional: background auto-sync
 ```
 
@@ -121,7 +121,7 @@ Verified against real data on the author's machine (Cursor 3.23.12, Claude deskt
 
 - Cursor must be closed on the target profile for Claude → Cursor writes (they are deferred, not lost, while it is open).
 - Cursor transcript files (`~/.cursor/projects/*/agent-transcripts`) are read-only sources: they sync Cursor → Claude only and contain no tool outputs.
-- Cursor's internal agent state used to continue a model turn server-side is not recreated; the visible conversation is. If a continued turn in Cursor lacks context, say "continue from the conversation above".
+- By default a chat sent to Cursor is a *view*: Cursor's model does not see it when you continue. The experimental **carry model context** option (see [docs/FORMATS.md](docs/FORMATS.md#cursor-agent-state-experimental)) rebuilds Cursor's internal agent state so the model knows the earlier conversation (most recent turns that fit, capped). Claude needs no such step: its log is its context.
 - Linux only for now.
 
 ## Roadmap

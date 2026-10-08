@@ -1,4 +1,4 @@
-.TH CHATBRIDGE 1 "October 2026" "chatbridge 1.0.2" "User Commands"
+.TH CHATBRIDGE 1 "October 2026" "chatbridge 1.1.0" "User Commands"
 .SH NAME
 chatbridge \- two-way chat history sync between Cursor and Claude
 .SH SYNOPSIS
@@ -47,6 +47,9 @@ Write changes (default: dry run).
 .TP
 .BI \-\-direction " both|to\-claude|to\-cursor"
 Limit the sync direction.
+.TP
+.B \-\-carry\-context
+(experimental) Also rebuild Cursor's model-facing conversation state so the Cursor agent knows the earlier conversation.
 .TP
 .BI \-\-cursor\-profile " LABEL"
 Cursor profile that receives new chats created from Claude.

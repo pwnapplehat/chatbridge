@@ -37,9 +37,11 @@ from .cursor_source import BUBBLE_PREFIX, COMPOSER_PREFIX, CursorProfile, iter_e
 from .cursor_writer import (
     CursorBusyError,
     chat_context_tokens,
+    chat_state_is_empty,
     cursor_chat_id_for_claude,
     estimate_tokens,
     folder_in_recents,
+    prefix_available,
     repair_chat,
     undo_journal,
     upsert_events,
@@ -134,6 +136,7 @@ class RepairPlan:
     folder: str | None
     tokens: int | None
     descriptions: list[str]
+    carry: bool = False
 
 
 @dataclass(frozen=True)
@@ -356,7 +359,14 @@ class SyncService:
         cursor_done = claude_done = True
         if repair is not None:
             try:
-                fixed = repair_chat(repair.profile, conv.cursor.ref.chat_id, repair.folder, repair.tokens, self.paths.journal_dir)
+                fixed = repair_chat(
+                    repair.profile, conv.cursor.ref.chat_id, repair.folder, repair.tokens, self.paths.journal_dir,
+                    cursor_events if repair.carry else None,
+                )  # fmt: skip
+                if repair.carry and fixed is not None and fixed.context_carried is False:
+                    report.notes.append(
+                        "model context was not carried into Cursor: no native Cursor chat was found to borrow the system prompt from"
+                    )
                 report.journal = str(fixed.journal_path) if fixed and fixed.journal_path else report.journal
             except (CursorBusyError, ImporterError) as exc:
                 cursor_done = False
@@ -372,7 +382,10 @@ class SyncService:
             try:
                 if profile is None:
                     raise CursorBusyError("the Cursor profile of this chat is not configured")
-                result = upsert_events(profile, conv.cursor.ref.chat_id, conv.title, conv.cursor.ref.cwd, to_cursor, self.paths.journal_dir)
+                result = upsert_events(
+                    profile, conv.cursor.ref.chat_id, conv.title, conv.cursor.ref.cwd, to_cursor, self.paths.journal_dir,
+                    carry_context=self.settings.carry_context and bool(conv.link and conv.link.origin == "claude"),
+                )  # fmt: skip
                 report.journal = str(result.journal_path or "")
             except (CursorBusyError, ImporterError) as exc:
                 cursor_done = False
@@ -404,7 +417,15 @@ class SyncService:
         if cursor_events and chat_context_tokens(profile, conv.cursor.ref.chat_id) == 0:
             tokens = estimate_tokens(cursor_events)
             descriptions.append(f"fill in Cursor's context-usage estimate (about {tokens:,} tokens)")
-        return RepairPlan(profile, folder, tokens, descriptions) if descriptions else None
+        carry = bool(
+            self.settings.carry_context
+            and cursor_events
+            and chat_state_is_empty(profile, conv.cursor.ref.chat_id)
+            and prefix_available(profile)
+        )
+        if carry:
+            descriptions.append("give Cursor's model the conversation as context (experimental)")
+        return RepairPlan(profile, folder, tokens, descriptions, carry) if descriptions else None
 
     def _create_claude_side(self, conv: Conversation, direction: Direction, apply: bool, cwd: str | None, report: SyncReport) -> None:
         assert conv.cursor
@@ -440,7 +461,19 @@ class SyncService:
         if target is None:
             raise ImporterError("no writable Cursor profile found; add one in settings")
         composer_id = cursor_chat_id_for_claude(conv.claude.key)
-        result = upsert_events(target, composer_id, conv.claude.title, conv.claude.cwd, events, self.paths.journal_dir)
+        result = upsert_events(
+            target,
+            composer_id,
+            conv.claude.title,
+            conv.claude.cwd,
+            events,
+            self.paths.journal_dir,
+            carry_context=self.settings.carry_context,
+        )
+        if result.context_carried is False:
+            report.notes.append(
+                "model context was not carried into Cursor: no native Cursor chat was found to borrow the system prompt from"
+            )
         report.journal = str(result.journal_path or "")
         report.status = "synced"
         link = Link(str(target.db_path), composer_id, conv.claude.key, "claude", int(time.time() * 1000))

@@ -80,6 +80,7 @@ class Settings:
     dry_run: bool = True
     auto_sync: bool = False
     auto_interval: int = 20
+    carry_context: bool = False
 
     def profiles(self) -> list[CursorProfile]:
         """Extra (backup) Cursor profiles configured by the user."""
@@ -111,6 +112,7 @@ def load_settings(paths: AppPaths) -> Settings:
         dry_run=raw.get("dry_run") is not False,
         auto_sync=raw.get("auto_sync") is True,
         auto_interval=max(5, as_int(raw.get("auto_interval"), 20)),
+        carry_context=raw.get("carry_context") is True,
     )
 
 
@@ -125,6 +127,7 @@ def save_settings(paths: AppPaths, settings: Settings) -> None:
         "dry_run": settings.dry_run,
         "auto_sync": settings.auto_sync,
         "auto_interval": settings.auto_interval,
+        "carry_context": settings.carry_context,
     }
     partial = target.with_name(target.name + ".partial")
     partial.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -40,6 +40,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--claude", action="append", default=[], help="Claude session key / id prefix (sync, repeatable)")
     parser.add_argument("--linked", action="store_true", help="sync: every conversation that exists in both tools")
     parser.add_argument("--direction", choices=["both", "to-claude", "to-cursor"], default="both", help="sync direction (default both)")
+    parser.add_argument(
+        "--carry-context",
+        action="store_true",
+        help="sync (EXPERIMENTAL): also rebuild Cursor's model-facing conversation state so the Cursor agent knows the earlier conversation",
+    )
     parser.add_argument("--cursor-profile", default=None, help="sync: Cursor profile label that receives new chats from Claude")
     parser.add_argument("--interval", type=float, default=20.0, help="watch: seconds between checks")
     parser.add_argument("--once", action="store_true", help="watch: run a single pass and exit")
@@ -222,6 +227,7 @@ def main(argv: list[str]) -> int:
     try:
         paths = make_paths(args)
         settings: Settings = load_settings(paths)
+        settings.carry_context = settings.carry_context or args.carry_context
         settings.extra_profiles += [(p.label, str(p.user_dir)) for p in map(parse_profile_arg, args.profile)]
         if args.command == "doctor":
             checks = run_doctor(paths, settings)

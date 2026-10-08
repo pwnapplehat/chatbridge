@@ -12,7 +12,7 @@ Safety notes before you start:
 ## 1. Install
 
 ```bash
-sudo apt install ./chatbridge_1.0.2_all.deb       # from dist/ or the CI artifact
+sudo apt install ./chatbridge_1.1.0_all.deb       # from dist/ or the CI artifact
 chatbridge doctor
 man chatbridge | head
 ```
@@ -62,6 +62,17 @@ Pick a small **Only in Claude** session. Choose the target Cursor profile in the
 - [ ] You can send a new message in it.
 - [ ] If anything looks wrong or Cursor complains: close Cursor, use **Undo** on the Activity page (or `chatbridge cursor-undo --journal <file>`), and report it with a screenshot and `chatbridge doctor`.
 
+## 5b. ★★ Does Cursor's model see the imported conversation? (experimental option)
+
+By default an imported chat is a view only. To test the experimental carry-context option:
+
+1. ChatBridge menu → tick **Carry model context into Cursor (experimental)** (or use `chatbridge sync … --carry-context`).
+2. Close Cursor. Select the Claude-origin chat → **Compare**: it should list "give Cursor's model the conversation as context". **Sync now**.
+3. Open the chat in Cursor and ask a question about something from the **last few turns** of the conversation, telling the agent not to use tools or memory. Only the most recent turns that fit are carried; earlier ones are replaced by a note.
+- [ ] The agent answers from the conversation (and not "I do not see that").
+- [ ] The context meter shows a sensible percentage (about the size of the carried part).
+- [ ] The chat still opens and you can keep chatting; if Cursor errors, Undo the write on the Activity page.
+
 ## 6. Undo
 
 Activity → **Undo** next to a Cursor write (Cursor closed).
@@ -104,7 +115,7 @@ Turn on **Auto-sync** (header switch).
 
 ```bash
 sudo apt remove chatbridge     # data in ~/.local/share/chatbridge and ~/.config/chatbridge stays
-sudo apt install ./chatbridge_1.0.2_all.deb
+sudo apt install ./chatbridge_1.1.0_all.deb
 ```
 
 - [ ] After reinstalling, links and Activity history are still there (conversations still show **In sync**).

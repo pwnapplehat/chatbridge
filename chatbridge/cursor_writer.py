@@ -28,6 +28,7 @@ from datetime import UTC, datetime
 from importlib import resources
 from pathlib import Path
 
+from .agent_state import BLOB_KEY, build_state, decode_state, find_prefix
 from .cursor_source import CursorProfile, uri_to_path
 from .events import MCP_CLAUDE_PREFIX
 from .model import (
@@ -69,6 +70,7 @@ class WriteResult:
     created: bool
     bubbles_added: int
     journal_path: Path | None
+    context_carried: bool | None = None  # None: not requested; False: requested but impossible (see notes)
 
 
 def cursor_chat_id_for_claude(claude_key: str) -> str:
@@ -273,6 +275,7 @@ def upsert_events(
     folder: str | None,
     events: list[Event],
     journal_dir: Path,
+    carry_context: bool = False,
 ) -> WriteResult:
     """Append events to a Cursor chat (creating it if needed) in one transaction, with an undo journal.
 
@@ -314,7 +317,16 @@ def upsert_events(
         composer["conversationCheckpointLastUpdatedAt"] = composer["lastUpdatedAt"]
         composer["status"] = "completed"
         composer["generatingBubbleIds"] = []
-        _set_context(composer, int(composer.get("contextTokensUsed") or 0) + estimate_tokens(events))  # type: ignore[call-overload]
+        added_tokens = estimate_tokens(events)
+        carried: bool | None = None
+        state_tokens: int | None = None
+        if carry_context:
+            state_tokens = _store_agent_state(conn, composer, composer_id, events, added_tokens, inserted, rebuild=created)
+            carried = state_tokens is not None
+        if created and state_tokens is not None:
+            _set_context(composer, state_tokens)  # the meter matches what the model will be sent
+        else:
+            _set_context(composer, int(composer.get("contextTokensUsed") or 0) + added_tokens)  # type: ignore[call-overload]
         recents = _put_recents(conn, folder) if created and ws_hash != "empty-window" else (False, None)
         journal = _write_journal(journal_dir, profile, composer_id, created, inserted, previous_composer, header_row, recents)
         conn.execute(
@@ -338,7 +350,7 @@ def upsert_events(
             ),
         )
         conn.execute("COMMIT")
-        return WriteResult(composer_id, created, len(inserted), journal)
+        return WriteResult(composer_id, created, len(inserted), journal, carried)
     except sqlite3.Error as exc:
         _rollback(conn)
         raise CursorWriteError(f"writing chat {composer_id} into {profile.db_path} failed: {exc}") from exc
@@ -350,13 +362,19 @@ def upsert_events(
 
 
 def repair_chat(
-    profile: CursorProfile, composer_id: str, folder: str | None, context_tokens: int | None, journal_dir: Path
+    profile: CursorProfile,
+    composer_id: str,
+    folder: str | None,
+    context_tokens: int | None,
+    journal_dir: Path,
+    carry_events: list[Event] | None = None,
 ) -> WriteResult | None:
     """Fix metadata of a ChatBridge-created chat in one journaled transaction (undoable).
 
     * file it under the workspace of `folder` if it sits in 'no folder' (folder was unknown when it was created);
     * add `folder` to Cursor's recent projects if missing;
-    * set the context-usage estimate if the stored figure is 0.
+    * set the context-usage estimate if the stored figure is 0;
+    * (experimental) give the chat a model-facing conversation state built from `carry_events` if it has none.
 
     Returns None when there is nothing to do.
     """
@@ -378,16 +396,28 @@ def repair_chat(
         refile = ws_hash != "empty-window" and header_row[1] != ws_hash
         set_context = context_tokens is not None and int(composer.get("contextTokensUsed") or 0) == 0  # type: ignore[call-overload]
         recents_previous, recents_new = _recents_with_folder(conn, folder) if folder and Path(folder).is_dir() else (None, None)
-        if not (refile or set_context or recents_new is not None):
+        carry = carry_events is not None and decode_state(as_str(composer.get("conversationState"))) is None
+        if not (refile or set_context or recents_new is not None or carry):
             conn.execute("ROLLBACK")
             return None
+        inserted: list[str] = []
+        carried: bool | None = None
+        state_tokens: int | None = None
+        if carry and carry_events is not None:
+            state_tokens = _store_agent_state(
+                conn, composer, composer_id, carry_events, estimate_tokens(carry_events), inserted, rebuild=True
+            )
+            carried = state_tokens is not None
         journal = _write_journal(
-            journal_dir, profile, composer_id, False, [], row[0], header_row, (recents_new is not None, recents_previous)
+            journal_dir, profile, composer_id, False, inserted, row[0], header_row, (recents_new is not None, recents_previous)
         )
         if refile:
             composer["workspaceIdentifier"] = workspace
             head["workspaceIdentifier"] = workspace
-        if set_context and context_tokens is not None:
+        if state_tokens is not None:
+            _set_context(composer, state_tokens)
+            head["contextUsagePercent"] = composer["contextUsagePercent"]
+        elif set_context and context_tokens is not None:
             _set_context(composer, context_tokens)
             head["contextUsagePercent"] = composer["contextUsagePercent"]
         conn.execute(
@@ -400,13 +430,75 @@ def repair_chat(
         if recents_new is not None:
             conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, recents_new))
         conn.execute("COMMIT")
-        return WriteResult(composer_id, False, 0, journal)
+        return WriteResult(composer_id, False, 0, journal, carried)
     except sqlite3.Error as exc:
         _rollback(conn)
         raise CursorWriteError(f"repairing chat {composer_id} failed: {exc}") from exc
     except BaseException:
         _rollback(conn)
         raise
+    finally:
+        conn.close()
+
+
+def _store_agent_state(
+    conn: sqlite3.Connection,
+    composer: JsonObj,
+    composer_id: str,
+    events: list[Event],
+    token_estimate: int,
+    inserted: list[str],
+    *,
+    rebuild: bool,
+) -> int | None:
+    """Give the chat a model-facing conversation state (EXPERIMENTAL). Returns its token estimate, or None if it cannot be built.
+
+    rebuild=True builds the state from `events` (the whole conversation); otherwise `events` are appended to the
+    chat's existing state. New blob rows are added to `inserted` so Undo can remove them.
+    """
+    existing = None if rebuild else decode_state(as_str(composer.get("conversationState")))
+    if not rebuild and existing is None:
+        return None
+    prefix = find_prefix(conn, {composer_id}) if existing is None else []
+    if existing is None and prefix is None:
+        return None
+    limit = int(composer.get("contextTokenLimit") or CONTEXT_LIMIT)  # type: ignore[call-overload]
+    budget = None if existing is not None else max(10_000, limit // 2 - sum(len(b) for b in prefix or []) // CHARS_PER_TOKEN)
+    built = build_state(prefix or [], existing, events, limit, token_estimate, budget)
+    for digest, data in built.blobs.items():
+        key = BLOB_KEY + digest
+        if conn.execute("SELECT 1 FROM cursorDiskKV WHERE key = ?", (key,)).fetchone() is None:
+            conn.execute("INSERT INTO cursorDiskKV (key, value) VALUES (?, ?)", (key, data))
+            inserted.append(key)
+    composer["conversationState"] = built.state
+    return built.tokens
+
+
+def chat_state_is_empty(profile: CursorProfile, composer_id: str) -> bool | None:
+    """Whether the chat has no model-facing conversation state yet (None if the chat is missing)."""
+    try:
+        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (COMPOSER_KEY + composer_id,)).fetchone()
+        return decode_state(as_str(as_obj(json.loads(row[0])).get("conversationState"))) is None if row else None
+    except (sqlite3.Error, json.JSONDecodeError):
+        return None
+    finally:
+        conn.close()
+
+
+def prefix_available(profile: CursorProfile) -> bool:
+    """Whether the profile has a native chat whose system prompt can be borrowed."""
+    try:
+        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return False
+    try:
+        return find_prefix(conn) is not None
+    except sqlite3.Error:
+        return False
     finally:
         conn.close()
 

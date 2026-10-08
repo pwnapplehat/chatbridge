@@ -321,3 +321,41 @@ def cursor_follow_up(db_path: Path, chat_id: str, items: list[tuple[int, str]], 
     conn.execute("UPDATE cursorDiskKV SET value = ? WHERE key = ?", (json.dumps(data), f"composerData:{chat_id}"))
     conn.commit()
     conn.close()
+
+
+# --------------------------------------------------------------------------- Cursor agent state (model-facing conversation memory)
+def add_native_agent_state(db_path: Path, chat_id: str) -> tuple[list[bytes], str]:
+    """Give a native Cursor chat a model-facing state: [system prompt, environment message, one user turn]."""
+    import base64
+    import hashlib
+
+    from chatbridge.agent_state import blob_bytes
+    from chatbridge.protobuf import field_bytes
+
+    messages: list[dict[str, object]] = [
+        {"role": "system", "content": "You are an AI coding assistant, powered by Cursor Test Model. You operate in Cursor."},
+        {
+            "role": "user",
+            "content": "<user_info>\nOS Version: linux\nWorkspace Path: unknown\n</user_info>",
+            "providerOptions": {"cursor": {}},
+        },
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "<user_query>\nhello\n</user_query>"}],
+            "providerOptions": {"cursor": {"requestId": "r"}},
+        },
+    ]
+    conn = sqlite3.connect(db_path)
+    hashes = []
+    for message in messages:
+        data = blob_bytes(message)
+        digest = hashlib.sha256(data).digest()
+        hashes.append(digest)
+        conn.execute("INSERT OR REPLACE INTO cursorDiskKV VALUES (?, ?)", (f"agentKv:blob:{digest.hex()}", data))
+    state = "~" + base64.b64encode(b"".join(field_bytes(1, h) for h in hashes)).decode()
+    data = json.loads(conn.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (f"composerData:{chat_id}",)).fetchone()[0])
+    data["conversationState"] = state
+    conn.execute("UPDATE cursorDiskKV SET value = ? WHERE key = ?", (json.dumps(data), f"composerData:{chat_id}"))
+    conn.commit()
+    conn.close()
+    return hashes, state

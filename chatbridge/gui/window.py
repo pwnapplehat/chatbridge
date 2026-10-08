@@ -124,6 +124,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.refresh_button.connect("clicked", lambda _b: self.reload())
         header.pack_start(self.refresh_button)
         menu = Gio.Menu()
+        menu.append("Carry model context into Cursor (experimental)", "win.carry")
         menu.append("Cursor backup profiles…", "win.profiles")
         menu.append("About ChatBridge", "win.about")
         header.pack_end(Gtk.MenuButton(icon_name="open-menu-symbolic", menu_model=menu, primary=True))
@@ -137,6 +138,9 @@ class MainWindow(Adw.ApplicationWindow):
             action = Gio.SimpleAction.new(name, None)
             action.connect("activate", handler)
             self.add_action(action)
+        self.carry_action = Gio.SimpleAction.new_stateful("carry", None, GLib.Variant.new_boolean(self.settings.carry_context))
+        self.carry_action.connect("change-state", self._on_carry_toggled)
+        self.add_action(self.carry_action)
         return header
 
     def _build_conversations_page(self) -> Gtk.Widget:
@@ -532,6 +536,17 @@ class MainWindow(Adw.ApplicationWindow):
             self.autosync.stop()
             self.activity.add_event("info", "Auto-sync is off")
         self._save_settings()
+
+    def _on_carry_toggled(self, action: Gio.SimpleAction, value: GLib.Variant) -> None:
+        enabled = value.get_boolean()
+        action.set_state(value)
+        self.settings.carry_context = enabled
+        self._save_settings()
+        self.toast(
+            "Cursor will receive the conversation as model context on the next sync (experimental)"
+            if enabled
+            else "Model context is no longer carried into Cursor"
+        )
 
     def _autosync_event(self, event: AutoSyncEvent) -> None:
         call_on_main(lambda: self._autosync_event_main(event))

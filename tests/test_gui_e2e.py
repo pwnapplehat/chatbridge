@@ -360,3 +360,12 @@ def test_activity_page_is_reachable(window: MainWindow) -> None:
     window.stack.set_visible_child_name("activity")
     assert window.stack.get_visible_child_name() == "activity"
     assert window.activity.journal_rows, "the empty-state row must be present"
+
+
+@pytest.mark.gui
+def test_carry_context_menu_toggle_is_persisted(window: MainWindow, world: World) -> None:
+    assert window.settings.carry_context is False
+    window.carry_action.change_state(GLib.Variant.new_boolean(True))
+    assert window.settings.carry_context is True and load_settings(world.paths).carry_context is True
+    window.carry_action.change_state(GLib.Variant.new_boolean(False))
+    assert load_settings(world.paths).carry_context is False

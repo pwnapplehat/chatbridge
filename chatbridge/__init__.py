@@ -1,3 +1,3 @@
 """ChatBridge: two-way, lossless chat-history sync between Cursor and Claude."""
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"

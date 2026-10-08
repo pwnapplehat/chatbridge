@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- **Experimental, opt-in: carry the conversation into Cursor as model context** (`chatbridge sync --carry-context`, or the app menu "Carry model context into Cursor (experimental)"). Cursor's agent builds its prompt from an internal conversation state (content-addressed JSON messages in `agentKv:blob:*` plus `composerData.conversationState`), not from the displayed messages, so an imported chat looked complete but the model started blank. ChatBridge can now rebuild that state for chats it creates: the system prompt and environment message are borrowed from the profile's most recent native chat, the conversation follows as AI-SDK style messages, and Claude follow-ups extend it. Reasoning is not included (it is provider-signed and cannot be forged). Long conversations keep the most recent turns that fit half of Cursor's context window, with a note about what was left out; tool outputs are capped at 20,000 characters. Everything is journaled and removed by Undo; native Cursor chats are never given synthetic state.
+
 ## 1.0.2
 
 - New: a chat created in Cursor from a Claude session now adds its project folder to Cursor's "Recent projects" (only when the folder is not already there; the previous list is journaled and restored by Undo).
