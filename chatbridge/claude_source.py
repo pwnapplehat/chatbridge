@@ -167,6 +167,25 @@ def _collect_results(log: Path) -> dict[str, tuple[str, bool]]:
     return results
 
 
+def active_context_tokens(log: Path) -> int:
+    """Rough token size of the chain Claude would send to the model: entries after the last compaction boundary."""
+    tokens = 0
+    with log.open(encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if '"compact_boundary"' in line and '"system"' in line:
+                tokens = 0
+                continue
+            if '"user"' not in line and '"assistant"' not in line:
+                continue  # cheap prefilter before parsing JSON
+            try:
+                entry = as_obj(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+            if as_str(entry.get("type")) in ("user", "assistant") and not entry.get("isSidechain") and not entry.get("isMeta"):
+                tokens += len(json.dumps(as_obj(entry.get("message")).get("content"), ensure_ascii=False)) // 4
+    return tokens
+
+
 def _skip_entry(entry: JsonObj) -> bool:
     return (
         as_str(entry.get("type")) not in ("user", "assistant")
@@ -175,6 +194,7 @@ def _skip_entry(entry: JsonObj) -> bool:
         or bool(entry.get("isCompactSummary"))
         or bool(entry.get("isApiErrorMessage"))
         or bool(entry.get("isVisibleInTranscriptOnly"))
+        or bool(entry.get("chatbridgeRecap"))  # copies re-emitted after a compaction (the originals are earlier in the log)
     )
 
 

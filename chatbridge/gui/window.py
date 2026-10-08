@@ -401,6 +401,8 @@ class MainWindow(Adw.ApplicationWindow):
             notes.append("Cursor must be closed on the target profile; if it is open the Cursor part is deferred, not lost.")
         if report.to_claude:
             notes.append("Claude: reopen the session (or restart the app) to see the new messages.")
+        if any("compact the Claude session" in fix for fix in report.fixes):
+            notes.append("Claude: quit the app (or close this session) BEFORE syncing, otherwise it keeps using its old in-memory history.")
         dialog = make_confirm(f"Sync “{conv.title or 'conversation'}”?", self.describe(report) + "\n\n" + "\n".join(notes), "Sync")
         dialog.connect("response", lambda _d, r: self._apply_single(conv, profile) if r == "confirm" else None)
         self._present(dialog)

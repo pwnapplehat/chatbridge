@@ -14,6 +14,10 @@ from pathlib import Path
 from .model import JsonObj, as_list, as_obj, as_str
 
 
+def _is_boundary(entry: JsonObj) -> bool:
+    return as_str(entry.get("type")) == "system" and as_str(entry.get("subtype")) == "compact_boundary"
+
+
 def validate(log: Path) -> list[str]:
     problems: list[str] = []
     entries: list[JsonObj] = []
@@ -23,7 +27,7 @@ def validate(log: Path) -> list[str]:
                 entries.append(as_obj(json.loads(line)))
             except json.JSONDecodeError as exc:
                 problems.append(f"line {number}: invalid JSON ({exc})")
-    convo = [e for e in entries if as_str(e.get("type")) in ("user", "assistant")]
+    convo = [e for e in entries if as_str(e.get("type")) in ("user", "assistant") or _is_boundary(e)]
     if not convo:
         return ["no conversation entries"]
     if as_str(convo[0].get("type")) != "user":
@@ -36,6 +40,12 @@ def validate(log: Path) -> list[str]:
         if uid in seen:
             problems.append(f"duplicate uuid {uid}")
         seen.add(uid)
+        if _is_boundary(entry):  # a compaction boundary starts a new chain (parent None) and is followed by its summary
+            if entry.get("parentUuid") is not None:
+                problems.append(f"entry {index}: compaction boundary must not have a parent")
+            parent = uid
+            last_ts = max(last_ts, as_str(entry.get("timestamp")))
+            continue
         if entry.get("parentUuid") != parent:
             problems.append(f"entry {index}: broken parent chain")
         parent = uid

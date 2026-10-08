@@ -14,6 +14,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
+from .compaction import CompactionPlan, capped_output, wrap_summary
 from .model import AssistantText, Counts, EmptyRecord, Event, JsonObj, Reasoning, ToolCall, UserText
 
 CLAUDE_VERSION = "2.1.284"
@@ -63,6 +64,7 @@ class _Builder:
     results: list[JsonObj] = field(default_factory=list)
     out: list[JsonObj] = field(default_factory=list)
     last_user_text: str = ""
+    recap: bool = False  # True after a compaction: entries are copies for the model's context (flagged, outputs capped)
 
     def _entry(self, kind: str, ts_ms: int, message: JsonObj, extra: JsonObj) -> JsonObj:
         self.last_ts = max(self.last_ts, ts_ms)
@@ -82,9 +84,42 @@ class _Builder:
             "version": CLAUDE_VERSION,
             "gitBranch": "HEAD",
         }
+        if self.recap:
+            entry["chatbridgeRecap"] = True
         self.parent = node
         self.out.append(entry)
         return entry
+
+    def compact(self, plan: CompactionPlan, transcript_path: str, ts_ms: int) -> None:
+        """Write a Claude Code compaction: boundary (new chain root) + summary; later entries are flagged copies."""
+        self.flush(ts_ms)
+        self.last_ts = max(self.last_ts, ts_ms)
+        common: JsonObj = {
+            "isSidechain": False, "userType": "external", "entrypoint": "claude-desktop", "cwd": self.cwd,
+            "sessionId": self.session_id, "version": CLAUDE_VERSION, "gitBranch": "HEAD", "chatbridgeRecap": True,
+        }  # fmt: skip
+        boundary_uuid = str(uuid.uuid4())
+        boundary: JsonObj = {
+            "parentUuid": None, "type": "system", "subtype": "compact_boundary", "content": "Conversation compacted", "isMeta": False,
+            "timestamp": iso_ms(self.last_ts), "uuid": boundary_uuid, "level": "info",
+            "compactMetadata": {
+                "trigger": "manual", "preTokens": plan.pre_tokens, "userContext": "", "messagesSummarized": plan.omitted,
+                "postTokens": plan.post_tokens,
+            },
+            **common,
+        }  # fmt: skip
+        if self.parent is not None:
+            boundary["logicalParentUuid"] = self.parent
+        summary_uuid = str(uuid.uuid4())
+        summary: JsonObj = {
+            "parentUuid": boundary_uuid, "type": "user",
+            "message": {"role": "user", "content": [{"type": "text", "text": wrap_summary(plan, transcript_path)}]},
+            "isCompactSummary": True, "isVisibleInTranscriptOnly": True, "uuid": summary_uuid, "timestamp": iso_ms(self.last_ts),
+            **common,
+        }  # fmt: skip
+        self.out.extend([boundary, summary])
+        self.parent = summary_uuid
+        self.recap = True
 
     def flush(self, ts_ms: int) -> None:
         """Emit the pending assistant message and, if it called tools, the matching results."""
@@ -128,9 +163,9 @@ class _Builder:
     def add_tool(self, call: ToolCall) -> None:
         """Append a tool_use block and queue its tool_result."""
         self.ensure_opening_user(call.ts_ms)
-        use_id = tool_use_id(self.chat_id, call)
+        use_id = tool_use_id(self.chat_id + ("#recap" if self.recap else ""), call)
         self.blocks.append({"type": "tool_use", "id": use_id, "name": safe_tool_name(call.name), "input": call.tool_input})
-        stored = call.output if call.output else None
+        stored = (capped_output(call.output) if self.recap else call.output) or None
         content = stored if stored is not None else (NO_ERROR_DETAIL_TEXT if call.is_error else NO_OUTPUT_TEXT)
         result: JsonObj = {"type": "tool_result", "tool_use_id": use_id, "content": content}
         if call.is_error:
@@ -210,14 +245,27 @@ def count_event(counts: Counts, event: Event) -> Counts:
     )
 
 
-def convert(events: Iterable[Event], session_id: str, chat_id: str, cwd: str, title: str) -> Iterator[JsonObj]:
+def convert(
+    events: Iterable[Event],
+    session_id: str,
+    chat_id: str,
+    cwd: str,
+    title: str,
+    compaction: CompactionPlan | None = None,
+    transcript_path: str = "",
+) -> Iterator[JsonObj]:
     """Yield Claude log entries for a stream of events, followed by the title/prompt trailer lines.
 
     Entries are yielded in batches as tool round-trips complete, so memory stays bounded
-    even for chats with hundreds of thousands of records.
+    even for chats with hundreds of thousands of records. With a `compaction` plan every event is written
+    normally (the full history), then a compaction boundary + summary, then the events from
+    `compaction.recent_start` on again as flagged copies that form the model's active context.
     """
     state = _Builder(session_id, chat_id, cwd)
-    for event in events:
+    recent: list[Event] = []
+    for index, event in enumerate(events):
+        if compaction is not None and index >= compaction.recent_start and not isinstance(event, EmptyRecord):
+            recent.append(_capped_copy(event))
         if isinstance(event, UserText):
             state.add_user(event)
         elif isinstance(event, AssistantText):
@@ -233,10 +281,47 @@ def convert(events: Iterable[Event], session_id: str, chat_id: str, cwd: str, ti
             yield from state.out
             state.out.clear()
     state.flush(state.last_ts)
+    if compaction is not None:
+        state.compact(compaction, transcript_path, state.last_ts)
+        _replay(state, recent)
+        state.flush(state.last_ts)
     yield from state.out
     yield {"type": "custom-title", "customTitle": title, "sessionId": session_id}
     yield {"type": "agent-name", "agentName": title, "sessionId": session_id}
     yield {"type": "last-prompt", "lastPrompt": state.last_user_text[:200], "leafUuid": state.parent, "sessionId": session_id}
+
+
+def _capped_copy(event: Event) -> Event:
+    """A copy of an event safe to keep in memory and send to the model (tool output capped)."""
+    if isinstance(event, ToolCall) and event.output is not None:
+        return ToolCall(event.seq, event.call_id, event.name, event.tool_input, capped_output(event.output), event.is_error, event.ts_ms)
+    return event
+
+
+def _replay(state: _Builder, events: Iterable[Event]) -> None:
+    """Feed events to a builder (used for the flagged copies after a compaction boundary)."""
+    for event in events:
+        if isinstance(event, UserText):
+            state.add_user(event)
+        elif isinstance(event, AssistantText):
+            state.add_text(event.text, event.ts_ms)
+        elif isinstance(event, Reasoning):
+            state.add_text(REASONING_PREFIX + event.text, event.ts_ms)
+        elif isinstance(event, ToolCall):
+            state.add_tool(event)
+            state.last_ts = max(state.last_ts, event.ts_ms)
+
+
+def build_compaction_tail(
+    recent: Iterable[Event], session_id: str, chat_id: str, cwd: str, last_uuid: str | None, last_ts_ms: int,
+    plan: CompactionPlan, transcript_path: str,
+) -> tuple[list[JsonObj], str | None, str]:  # fmt: skip
+    """Entries that compact an existing log: boundary + summary + flagged copies of `recent`, appended after `last_uuid`."""
+    state = _Builder(session_id, chat_id, cwd, parent=last_uuid, last_ts=last_ts_ms)
+    state.compact(plan, transcript_path, last_ts_ms)
+    _replay(state, recent)
+    state.flush(state.last_ts)
+    return state.out, state.parent, state.last_user_text
 
 
 def build_continuation(

@@ -149,5 +149,5 @@ def test_watch_once_syncs_changes_in_linked_conversations(world: World) -> None:
 def test_doctor_reports_environment(world: World) -> None:
     result = cli(world, "doctor")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "ChatBridge 1.1.0" in result.stdout and "Cursor profile 'live' [read/write]" in result.stdout
+    assert "ChatBridge 1.1.1" in result.stdout and "Cursor profile 'live' [read/write]" in result.stdout
     assert "Claude desktop app sessions folder" in result.stdout and "Cursor is closed" in result.stdout

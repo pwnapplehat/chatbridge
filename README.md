@@ -30,8 +30,8 @@ Cursor and Claude each keep their chat history in their own format. If you start
 
 ```bash
 git clone https://github.com/pwnapplehat/chatbridge.git && cd chatbridge
-packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.0_all.deb (no root needed)
-sudo apt install ./dist/chatbridge_1.1.0_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
+packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.1_all.deb (no root needed)
+sudo apt install ./dist/chatbridge_1.1.1_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
 systemctl --user enable --now chatbridge-sync   # optional: background auto-sync
 ```
 
@@ -116,6 +116,10 @@ What is covered by automated tests (`./scripts/check.sh`: ruff, `mypy --strict`,
 Verified against real data on the author's machine (Cursor 3.23.12, Claude desktop app 2.1.x): all 257 non-empty Cursor chats converted into Claude with zero mismatches, and four real chats (including one with about 192,000 records) round-tripped Cursor → Claude → Cursor with identical message sets. Imported sessions were opened and continued in the Claude desktop app.
 
 **Cursor-side writes** mirror records captured from a real Cursor 3.23.12 chat and are verified by structure and by round trip, but the first time you send a Claude conversation to Cursor, check that one chat opens as expected in your Cursor before syncing many. Cursor changes its internal format between versions; `scripts/gen_cursor_templates.py` regenerates the templates, and Undo reverts any write.
+
+## Long conversations
+
+Claude's session log *is* the model's context, so a huge Cursor chat cannot be imported as one chain (it would be millions of tokens). ChatBridge keeps the full history in the log and compacts the active context exactly like Claude Code does: a boundary, a summary of the older part and the most recent turns. Cursor gets the equivalent with the experimental carry-context option (most recent turns within half of its window).
 
 ## Limitations
 

@@ -19,12 +19,14 @@ from collections.abc import Callable, Iterable
 from datetime import datetime
 from pathlib import Path
 
+from .compaction import CompactionPlan, EventScan, plan_compaction
 from .converter import (
     ATTACHMENT_PREFIX,
     NO_ERROR_DETAIL_TEXT,
     NO_OUTPUT_TEXT,
     OPENER_PREFIX,
     REASONING_PREFIX,
+    build_compaction_tail,
     build_continuation,
     convert,
     count_event,
@@ -117,8 +119,8 @@ def count_written(log_path: Path) -> Counts:
         for line in handle:
             entry = as_obj(json.loads(line))
             kind = as_str(entry.get("type"))
-            if kind not in ("user", "assistant"):
-                continue
+            if kind not in ("user", "assistant") or entry.get("chatbridgeRecap") or entry.get("isCompactSummary"):
+                continue  # compaction copies/summary are context for the model, not conversation content
             blocks = [as_obj(b) for b in as_list(as_obj(entry.get("message")).get("content"))]
             is_opener = kind == "user" and any(as_str(b.get("text")).startswith(OPENER_PREFIX) for b in blocks)
             if kind == "user" and not is_opener and any(b.get("type") == "text" for b in blocks):
@@ -206,6 +208,19 @@ def tally_events(events: Iterable[Event]) -> tuple[Counts, str]:
     return counts, first_user
 
 
+def scan_events(events: Iterable[Event]) -> tuple[Counts, str, EventScan]:
+    """One pass over a conversation: content counts, the first user message and the data the compaction planner needs."""
+    counts = Counts()
+    first_user = ""
+    scan = EventScan()
+    for event in events:
+        counts = count_event(counts, event)
+        scan.add(event)
+        if isinstance(event, UserText) and not first_user:
+            first_user = event.text
+    return counts, first_user, scan
+
+
 def import_chat(
     chat: ChatRef,
     open_events: Callable[[], Iterable[Event]],
@@ -227,12 +242,18 @@ def import_chat(
     if log_path.exists():
         report.status, report.detail = "exists", "already imported; left untouched"
         return report
-    source, first_user = tally_events(open_events())
+    source, first_user, scan = scan_events(open_events())
     report.source_counts = source
     report.title = derive_title(chat.name, first_user)
     if source.content_tuple() == Counts().content_tuple():
         report.status, report.detail = "empty", "no user-visible content in the source"
         return report
+    plan = plan_compaction(scan, report.title, f"Cursor ({chat.source_label})")
+    if plan is not None:
+        report.detail = (
+            f"long conversation (about {plan.pre_tokens:,} tokens): the full history is kept in the log, and Claude's active context is "
+            f"compacted to about {plan.post_tokens:,} tokens (the first {plan.omitted:,} messages are summarized, the latest {plan.recent:,} follow)"
+        )
     if not apply:
         return report
     if quarantined.exists():
@@ -240,7 +261,9 @@ def import_chat(
         report.detail = "recovered previously quarantined log"
         size, last_assistant = log_path.stat().st_size, last_assistant_uuid(log_path)
     else:
-        size, last_assistant = _write_log(convert(open_events(), session_id, chat.chat_id, cwd, report.title), log_path)
+        size, last_assistant = _write_log(
+            convert(open_events(), session_id, chat.chat_id, cwd, report.title, plan, str(log_path)), log_path
+        )
     report.log_bytes = size
     report.written_counts = count_written(log_path)
     problems = validate(log_path)
@@ -300,6 +323,14 @@ def append_events_to_claude(log_path: Path, meta_path: Path | None, chat_id: str
     entries, last_uuid, last_user = build_continuation(events, session_id, chat_id, cwd or str(Path.home()), parent, last_ts)
     if not entries:
         return 0
+    _commit_entries(log_path, meta_path, session_id, entries, last_uuid, last_user)
+    return len(entries)
+
+
+def _commit_entries(
+    log_path: Path, meta_path: Path | None, session_id: str, entries: list[JsonObj], last_uuid: str | None, last_user: str
+) -> None:
+    """Append entries (+ a last-prompt trailer) with one write + fsync and refresh the desktop record."""
     trailer = {"type": "last-prompt", "lastPrompt": last_user[:200], "leafUuid": last_uuid, "sessionId": session_id}
     text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in [*entries, trailer])
     with log_path.open("a", encoding="utf-8") as handle:
@@ -316,4 +347,21 @@ def append_events_to_claude(log_path: Path, meta_path: Path | None, chat_id: str
         partial = meta_path.with_name(meta_path.name + ".partial")
         partial.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         os.replace(partial, meta_path)
+
+
+def compact_claude_log(
+    log_path: Path, meta_path: Path | None, chat_id: str, events: list[Event], plan: CompactionPlan, settle_seconds: float = 3.0
+) -> int:
+    """Append a compaction (boundary + summary + flagged copies of the recent turns) to an oversized log.
+
+    History is never rewritten: the new entries start a new chain after the existing log, so Claude's context becomes
+    the summary plus the recent turns while everything earlier stays in the file. Returns the number of entries written.
+    """
+    if time.time() - log_path.stat().st_mtime < settle_seconds:
+        raise ClaudeBusyError(f"{log_path.name} was modified moments ago; the Claude app may be mid-turn")
+    parent, last_ts, cwd, session_id = read_log_tail(log_path)
+    entries, last_uuid, last_user = build_compaction_tail(
+        events[plan.recent_start :], session_id, chat_id, cwd or str(Path.home()), parent, last_ts, plan, str(log_path)
+    )
+    _commit_entries(log_path, meta_path, session_id, entries, last_uuid, last_user)
     return len(entries)

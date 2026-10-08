@@ -30,7 +30,8 @@ from pathlib import Path
 from typing import Literal
 
 from .catalog import ChatRow, project_label
-from .claude_source import ClaudeSession, iter_claude_events, list_claude_sessions
+from .claude_source import ClaudeSession, active_context_tokens, iter_claude_events, list_claude_sessions
+from .compaction import FULL_BUDGET_TOKENS, CompactionPlan, EventScan, plan_compaction
 from .config import AppPaths, Settings
 from .converter import NO_ERROR_DETAIL_TEXT, NO_OUTPUT_TEXT
 from .cursor_source import BUBBLE_PREFIX, COMPOSER_PREFIX, CursorProfile, iter_events, key_range, open_readonly
@@ -63,7 +64,15 @@ from .model import (
     as_str,
 )
 from .service import ImportService, PreviewLine
-from .writer import ClaudeBusyError, append_events_to_claude, find_sessions_dir_or_none, import_chat, local_session_name, session_uuid
+from .writer import (
+    ClaudeBusyError,
+    append_events_to_claude,
+    compact_claude_log,
+    find_sessions_dir_or_none,
+    import_chat,
+    local_session_name,
+    session_uuid,
+)
 
 LOG = logging.getLogger(__name__)
 Direction = Literal["both", "to-claude", "to-cursor"]
@@ -299,15 +308,15 @@ class SyncService:
     # ------------------------------------------------------------------ planning
     def plan(self, conversation: Conversation) -> tuple[list[Event], list[Event]]:
         """(events to append to Claude, events to append to Cursor) from an exact event-level comparison."""
-        to_claude, to_cursor, _ = self._plan_events(conversation)
+        to_claude, to_cursor, _, _ = self._plan_events(conversation)
         return to_claude, to_cursor
 
     @staticmethod
-    def _plan_events(conversation: Conversation) -> tuple[list[Event], list[Event], list[Event]]:
-        """Like plan(), also returning the Cursor-side events that were read."""
+    def _plan_events(conversation: Conversation) -> tuple[list[Event], list[Event], list[Event], list[Event]]:
+        """Like plan(), also returning the Cursor-side and Claude-side events that were read."""
         cursor_events = read_cursor_events(conversation.cursor.ref) if conversation.cursor else []
         claude_events = read_claude_events(conversation.claude) if conversation.claude else []
-        return missing_events(cursor_events, claude_events), missing_events(claude_events, cursor_events), cursor_events
+        return missing_events(cursor_events, claude_events), missing_events(claude_events, cursor_events), cursor_events, claude_events
 
     # ------------------------------------------------------------------ applying
     def sync(
@@ -337,7 +346,7 @@ class SyncService:
 
     def _sync_pair(self, conv: Conversation, direction: Direction, apply: bool, report: SyncReport) -> None:
         assert conv.cursor and conv.claude
-        to_claude, to_cursor, cursor_events = self._plan_events(conv)
+        to_claude, to_cursor, cursor_events, claude_events = self._plan_events(conv)
         if direction == "to-claude":
             to_cursor = []
         if direction == "to-cursor":
@@ -349,7 +358,13 @@ class SyncService:
         repair = self._repair_plan(conv, cursor_events) if direction != "to-claude" else None
         if repair is not None:
             report.fixes.extend(repair.descriptions)
-        if not to_claude and not to_cursor and repair is None:
+        compaction = self._compaction_plan(conv, [*claude_events, *to_claude]) if direction != "to-cursor" else None
+        if compaction is not None:
+            report.fixes.append(
+                f"compact the Claude session: its context is about {compaction.pre_tokens:,} tokens, far beyond the model's window; the first "
+                f"{compaction.omitted:,} messages are summarized and the latest {compaction.recent:,} kept (the full history stays in the log)"
+            )
+        if not to_claude and not to_cursor and repair is None and compaction is None:
             report.status = "noop" if apply else "dry-run"
             self._remember(conv, conv.link)
             return
@@ -377,6 +392,14 @@ class SyncService:
             except ClaudeBusyError as exc:
                 claude_done = False
                 deferred.append(str(exc))
+        if compaction is not None and claude_done:
+            try:
+                compact_claude_log(
+                    conv.claude.log_path, conv.claude.meta_path, conv.cursor.ref.chat_id, [*claude_events, *to_claude], compaction
+                )
+            except ClaudeBusyError as exc:
+                claude_done = False
+                deferred.append(str(exc))
         if to_cursor:
             profile = self.profile_for(str(conv.cursor.ref.source_path))
             try:
@@ -399,6 +422,18 @@ class SyncService:
             claude_dirty=(bool(to_cursor) or repair is not None) and not cursor_done,
             cursor_dirty=bool(to_claude) and not claude_done,
         )
+
+    def _compaction_plan(self, conv: Conversation, events: list[Event]) -> CompactionPlan | None:
+        """A compaction for a ChatBridge-imported Claude session whose active context exceeds the model window."""
+        if conv.claude is None or conv.cursor is None:
+            return None
+        origin = conv.link.origin if conv.link else self._origin_of(conv)
+        if origin != "cursor" or active_context_tokens(conv.claude.log_path) <= FULL_BUDGET_TOKENS:
+            return None
+        scan = EventScan()
+        for event in events:
+            scan.add(event)
+        return plan_compaction(scan, conv.title, f"Cursor ({conv.cursor.ref.source_label})")
 
     def _repair_plan(self, conv: Conversation, cursor_events: list[Event]) -> RepairPlan | None:
         """Metadata fixes for a ChatBridge-created Cursor chat: workspace, recent projects, context estimate."""

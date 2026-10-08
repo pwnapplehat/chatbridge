@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1
+
+- Fix: long Cursor chats imported into Claude made the session far larger than the model's window (a 17,000-record chat is about 18.8 million tokens against 1 million), so it could not be continued and `/compact` failed. Big imports are now compacted the way Claude Code itself does it: the full history stays in the log, followed by a `compact_boundary`, a summary of the older part (extractive, no model call) and the latest turns (tool outputs capped at 20,000 characters), so the active context is about 55,000 tokens. Copies are flagged and never synced twice.
+- New repair: a sync appends the same compaction to oversized sessions that ChatBridge imported earlier (append-only; Compare lists it; quit the Claude app or close the session first).
+- The log validator understands compaction boundaries.
+
 ## 1.1.0
 
 - **Experimental, opt-in: carry the conversation into Cursor as model context** (`chatbridge sync --carry-context`, or the app menu "Carry model context into Cursor (experimental)"). Cursor's agent builds its prompt from an internal conversation state (content-addressed JSON messages in `agentKv:blob:*` plus `composerData.conversationState`), not from the displayed messages, so an imported chat looked complete but the model started blank. ChatBridge can now rebuild that state for chats it creates: the system prompt and environment message are borrowed from the profile's most recent native chat, the conversation follows as AI-SDK style messages, and Claude follow-ups extend it. Reasoning is not included (it is provider-signed and cannot be forged). Long conversations keep the most recent turns that fit half of Cursor's context window, with a note about what was left out; tool outputs are capped at 20,000 characters. Everything is journaled and removed by Undo; native Cursor chats are never given synthetic state.
