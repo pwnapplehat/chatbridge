@@ -34,7 +34,14 @@ from .claude_source import ClaudeSession, iter_claude_events, list_claude_sessio
 from .config import AppPaths, Settings
 from .converter import NO_ERROR_DETAIL_TEXT, NO_OUTPUT_TEXT
 from .cursor_source import BUBBLE_PREFIX, COMPOSER_PREFIX, CursorProfile, iter_events, key_range, open_readonly
-from .cursor_writer import CursorBusyError, cursor_chat_id_for_claude, undo_journal, upsert_events
+from .cursor_writer import (
+    CursorBusyError,
+    cursor_chat_id_for_claude,
+    refile_chat,
+    undo_journal,
+    upsert_events,
+    workspace_for_folder,
+)
 from .events import meaningful, missing_events
 from .links import Link, LinkStore, Origin
 from .model import (
@@ -113,6 +120,7 @@ class SyncReport:
     detail: str = ""
     journal: str = ""
     notes: list[str] = field(default_factory=list)
+    fixes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -316,13 +324,22 @@ class SyncService:
             to_cursor = []
             report.notes.append("Cursor transcript files are read-only: messages can flow Cursor -> Claude only.")
         report.to_claude, report.to_cursor = len(to_claude), len(to_cursor)
-        if not to_claude and not to_cursor:
+        refile = self._refile_target(conv)
+        if refile is not None:
+            report.fixes.append(f"move the Cursor chat into the project folder {refile[1]} (it is filed under 'no folder')")
+        if not to_claude and not to_cursor and refile is None:
             report.status = "noop" if apply else "dry-run"
             self._remember(conv, conv.link)
             return
         if not apply:
             return
         deferred: list[str] = []
+        if refile is not None:
+            try:
+                moved = refile_chat(refile[0], conv.cursor.ref.chat_id, refile[1], self.paths.journal_dir)
+                report.journal = str(moved.journal_path) if moved and moved.journal_path else report.journal
+            except (CursorBusyError, ImporterError) as exc:
+                deferred.append(str(exc))
         cursor_done = claude_done = True
         if to_claude:
             try:
@@ -344,6 +361,18 @@ class SyncService:
         report.detail = " ".join(deferred)
         # A side whose new events could not be delivered stays marked dirty so it keeps showing as changed.
         self._remember(conv, conv.link, claude_dirty=bool(to_cursor) and not cursor_done, cursor_dirty=bool(to_claude) and not claude_done)
+
+    def _refile_target(self, conv: Conversation) -> tuple[CursorProfile, str] | None:
+        """(profile, folder) when a ChatBridge-created Cursor chat sits in 'no folder' but its folder is now resolvable."""
+        if not (conv.link and conv.link.origin == "claude" and conv.cursor and conv.claude):
+            return None
+        if conv.cursor.ref.kind != "db" or conv.cursor.ref.cwd or not conv.claude.cwd or not Path(conv.claude.cwd).is_dir():
+            return None
+        profile = self.profile_for(str(conv.cursor.ref.source_path))
+        if profile is None or not profile.writable:
+            return None
+        workspace_id, _ = workspace_for_folder(profile, conv.claude.cwd)
+        return (profile, conv.claude.cwd) if workspace_id != "empty-window" else None
 
     def _create_claude_side(self, conv: Conversation, direction: Direction, apply: bool, cwd: str | None, report: SyncReport) -> None:
         assert conv.cursor

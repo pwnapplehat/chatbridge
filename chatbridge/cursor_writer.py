@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -188,15 +189,35 @@ def build_bubble(event: Event, bubble_id: str, ts_ms: int, tpl: dict[str, JsonOb
 
 
 # --------------------------------------------------------------------------- workspace + composer records
+def workspace_hash(folder: str) -> str | None:
+    """The workspace id Cursor/VS Code assigns to a folder on Linux: md5(path + inode). None if the folder is gone."""
+    try:
+        inode = os.stat(folder).st_ino
+    except OSError:
+        return None
+    return hashlib.md5(f"{folder}{inode}".encode()).hexdigest()
+
+
 def workspace_for_folder(profile: CursorProfile, folder: str | None) -> tuple[str, JsonObj]:
-    """(workspace hash, workspaceIdentifier) for a folder this profile already knows; else the 'empty-window' workspace."""
+    """(workspace id, workspaceIdentifier) for a folder.
+
+    Order: a workspace this profile already knows for the folder; else the id Cursor would assign when the folder is
+    first opened (so the chat appears as soon as the folder is opened); else the 'empty-window' (no folder) workspace.
+    """
     if folder:
         wanted = {folder, folder.replace("/run/media/" + os.environ.get("USER", ""), "/mnt", 1)}
         for ws_hash, known in profile.workspace_folders().items():
             if known in wanted or uri_to_path(known) in wanted:
-                uri = {"$mid": 1, "fsPath": known, "external": f"file://{known}", "path": known, "scheme": "file"}
-                return ws_hash, {"id": ws_hash, "uri": uri}
+                return ws_hash, _folder_identifier(ws_hash, known)
+        computed = workspace_hash(folder)
+        if computed is not None:
+            return computed, _folder_identifier(computed, folder)
     return "empty-window", {"id": "empty-window"}
+
+
+def _folder_identifier(ws_hash: str, folder: str) -> JsonObj:
+    uri = {"$mid": 1, "fsPath": folder, "external": f"file://{folder}", "path": folder, "scheme": "file"}
+    return {"id": ws_hash, "uri": uri}
 
 
 def _random_key() -> str:
@@ -317,6 +338,51 @@ def upsert_events(
     except sqlite3.Error as exc:
         _rollback(conn)
         raise CursorWriteError(f"writing chat {composer_id} into {profile.db_path} failed: {exc}") from exc
+    except BaseException:
+        _rollback(conn)
+        raise
+    finally:
+        conn.close()
+
+
+def refile_chat(profile: CursorProfile, composer_id: str, folder: str, journal_dir: Path) -> WriteResult | None:
+    """Move an existing chat into the workspace of `folder` (journaled, undoable).
+
+    Used to repair chats that were filed under 'no folder' because the folder was unknown at the time. Returns None
+    when there is nothing to do (chat missing, folder unresolvable, or already in that workspace).
+    """
+    if not profile.writable:
+        raise CursorWriteError(f"profile '{profile.label}' is read-only (a backup); choose a live Cursor profile")
+    if cursor_running(profile):
+        raise CursorBusyError(f"Cursor is running on profile '{profile.label}'. Close Cursor, then try again.")
+    ws_hash, workspace = workspace_for_folder(profile, folder)
+    if ws_hash == "empty-window":
+        return None
+    conn = sqlite3.connect(profile.db_path, timeout=30, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (COMPOSER_KEY + composer_id,)).fetchone()
+        header_row = conn.execute("SELECT * FROM composerHeaders WHERE composerId = ?", (composer_id,)).fetchone()
+        if row is None or header_row is None or header_row[1] == ws_hash:
+            conn.execute("ROLLBACK")
+            return None
+        composer = as_obj(json.loads(row[0]))
+        composer["workspaceIdentifier"] = workspace
+        head = as_obj(json.loads(str(header_row[-1])))
+        head["workspaceIdentifier"] = workspace
+        journal = _write_journal(journal_dir, profile, composer_id, False, [], row[0], header_row)
+        conn.execute(
+            "UPDATE cursorDiskKV SET value = ? WHERE key = ?", (json.dumps(composer, ensure_ascii=False), COMPOSER_KEY + composer_id)
+        )
+        conn.execute(
+            "UPDATE composerHeaders SET workspaceId = ?, value = ? WHERE composerId = ?",
+            (ws_hash, json.dumps(head, ensure_ascii=False), composer_id),
+        )
+        conn.execute("COMMIT")
+        return WriteResult(composer_id, False, 0, journal)
+    except sqlite3.Error as exc:
+        _rollback(conn)
+        raise CursorWriteError(f"re-filing chat {composer_id} failed: {exc}") from exc
     except BaseException:
         _rollback(conn)
         raise

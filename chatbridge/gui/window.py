@@ -12,6 +12,7 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
+from .. import __version__  # noqa: E402
 from ..autosync import AutoSyncer, AutoSyncEvent  # noqa: E402
 from ..config import AppPaths, Settings, save_settings  # noqa: E402
 from ..conversations import ConversationFilter, StateGroup, conversation_matches, projects_of_conversations  # noqa: E402
@@ -358,13 +359,14 @@ class MainWindow(Adw.ApplicationWindow):
     def describe(report: SyncReport) -> str:
         if report.status == "failed":
             return f"Could not compare: {report.detail}"
-        if report.to_claude == 0 and report.to_cursor == 0:
+        if report.to_claude == 0 and report.to_cursor == 0 and not report.fixes:
             return "Nothing to sync: both sides already have the same messages."
         parts = []
         if report.to_claude:
             parts.append(f"{report.to_claude} message(s) will be added to Claude")
         if report.to_cursor:
             parts.append(f"{report.to_cursor} message(s) will be added to Cursor")
+        parts += [fix[0].upper() + fix[1:] for fix in report.fixes]
         return " and ".join(parts) + "."
 
     def sync_focused(self) -> None:
@@ -386,12 +388,12 @@ class MainWindow(Adw.ApplicationWindow):
         if report.status == "failed":
             self._present(make_message("Cannot sync this conversation", report.detail))
             return
-        if report.to_claude == 0 and report.to_cursor == 0:
+        if report.to_claude == 0 and report.to_cursor == 0 and not report.fixes:
             self.toast("Already in sync")
             self.detail.set_result(self.describe(report))
             return
         notes = []
-        if report.to_cursor:
+        if report.to_cursor or report.fixes:
             notes.append("Cursor must be closed on the target profile; if it is open the Cursor part is deferred, not lost.")
         if report.to_claude:
             notes.append("Claude: reopen the session (or restart the app) to see the new messages.")
@@ -566,7 +568,7 @@ class MainWindow(Adw.ApplicationWindow):
     def _show_about(self) -> None:
         about = Adw.AboutDialog(
             application_name="ChatBridge",
-            version="1.0.0",
+            version=__version__,
             comments="Two-way sync of chat history between Cursor and Claude. Messages, reasoning and tool calls, appended safely and reversibly.",
             developer_name="ChatBridge contributors",
             license_type=Gtk.License.MIT_X11,

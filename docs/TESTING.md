@@ -12,7 +12,7 @@ Safety notes before you start:
 ## 1. Install
 
 ```bash
-sudo apt install ./chatbridge_1.0.0_all.deb       # from dist/ or the CI artifact
+sudo apt install ./chatbridge_1.0.1_all.deb       # from dist/ or the CI artifact
 chatbridge doctor
 man chatbridge | head
 ```
@@ -55,7 +55,7 @@ With the chat from step 3: after your follow-up in Claude, click refresh in Chat
 Pick a small **Only in Claude** session. Choose the target Cursor profile in the detail pane. Close Cursor. **Send to Cursor**.
 
 - [ ] A chat is created and the row becomes **In sync**.
-- [ ] Open Cursor on that profile and that project folder: the chat is listed (if the folder was never opened in this profile it is under "no folder").
+- [ ] Open Cursor on that profile **with the same project folder open** (File → Open Folder → the chat's project folder): the chat is listed in that window's agent list. A chat whose folder no longer exists is filed under "no folder" and only shows in a window with no folder open.
 - [ ] It opens without errors; messages, reasoning and tool calls display.
 - [ ] You can send a new message in it.
 - [ ] If anything looks wrong or Cursor complains: close Cursor, use **Undo** on the Activity page (or `chatbridge cursor-undo --journal <file>`), and report it with a screenshot and `chatbridge doctor`.
@@ -102,7 +102,7 @@ Turn on **Auto-sync** (header switch).
 
 ```bash
 sudo apt remove chatbridge     # data in ~/.local/share/chatbridge and ~/.config/chatbridge stays
-sudo apt install ./chatbridge_1.0.0_all.deb
+sudo apt install ./chatbridge_1.0.1_all.deb
 ```
 
 - [ ] After reinstalling, links and Activity history are still there (conversations still show **In sync**).

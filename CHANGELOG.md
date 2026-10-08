@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Fix: chats sent from Claude to Cursor are now filed under the workspace Cursor will assign to the project folder (`md5(path + inode)` on Linux), even if that folder was never opened in Cursor. Previously they landed under "no folder" and were invisible when the project folder was opened.
+- New: a sync now detects ChatBridge-created Cursor chats that are filed under "no folder" although their folder is known, and moves them into the project (journaled, undoable, deferred while Cursor runs).
+
 ## 1.0.0
 
 - Two-way sync between Cursor and Claude (messages, reasoning, tool calls with outputs), append-only and idempotent.

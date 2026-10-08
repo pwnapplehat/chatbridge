@@ -135,15 +135,82 @@ def test_new_cursor_chat_is_placed_in_the_matching_workspace(sync: SyncService, 
     assert workspace  # header row exists
 
 
-def test_unknown_folder_goes_to_no_folder_workspace(sync: SyncService, world: World, tmp_path: Path) -> None:
-    other = tmp_path / "somewhere-else"
-    other.mkdir()
-    native_session(world, str(other))
+def test_unknown_existing_folder_gets_the_workspace_id_cursor_will_assign(sync: SyncService, world: World, tmp_path: Path) -> None:
+    """Cursor ids a folder workspace as md5(path + inode) on Linux; computing it files the chat where Cursor will look."""
+    import hashlib
+    import os
+
+    folder = tmp_path / "never-opened-in-cursor"
+    folder.mkdir()
+    native_session(world, str(folder))
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    expected = hashlib.md5(f"{folder}{os.stat(folder).st_ino}".encode()).hexdigest()
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    rows = conn.execute("SELECT workspaceId, value FROM composerHeaders WHERE value LIKE '%Refactor lexer%'").fetchall()
+    conn.close()
+    assert [r[0] for r in rows] == [expected]
+    assert json.loads(rows[0][1])["workspaceIdentifier"]["uri"]["fsPath"] == str(folder)
+    assert find(sync, claude_key=CLAUDE_KEY).cursor.ref.cwd == str(folder)  # type: ignore[union-attr]
+
+
+def test_vanished_folder_goes_to_no_folder_workspace(sync: SyncService, world: World, tmp_path: Path) -> None:
+    native_session(world, str(tmp_path / "does-not-exist"))
     sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
     conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
     ids = [r[0] for r in conn.execute("SELECT workspaceId FROM composerHeaders WHERE value LIKE '%Refactor lexer%'")]
     conn.close()
     assert ids == ["empty-window"]
+
+
+def test_misfiled_chat_is_moved_into_its_project_and_can_be_undone(sync: SyncService, world: World, tmp_path: Path) -> None:
+    """The reported bug: chat created while the folder was unknown sat under 'no folder'; a sync now repairs it."""
+    folder = tmp_path / "late-folder"
+    native_session(world, str(folder))  # folder does not exist yet
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    folder.mkdir()
+    conv = find(sync, claude_key=CLAUDE_KEY)
+    assert conv.state is SyncState.IN_SYNC and conv.cursor.ref.cwd is None  # type: ignore[union-attr]
+
+    dry = sync.sync(conv, apply=False)
+    assert dry.fixes and "move the Cursor chat" in dry.fixes[0] and (dry.to_claude, dry.to_cursor) == (0, 0)
+    report = sync.sync(conv, apply=True)
+    assert report.status == "synced" and report.journal
+
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    ws, value = conn.execute("SELECT workspaceId, value FROM composerHeaders WHERE value LIKE '%Refactor lexer%'").fetchone()
+    data = json.loads(
+        conn.execute("SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%' AND value LIKE '%Refactor lexer%'").fetchone()[0]
+    )
+    conn.close()
+    assert ws != "empty-window" and json.loads(value)["workspaceIdentifier"]["id"] == ws == data["workspaceIdentifier"]["id"]
+    after = find(sync, claude_key=CLAUDE_KEY)
+    assert after.cursor.ref.cwd == str(folder) and not sync.sync(after, apply=True).fixes  # type: ignore[union-attr]
+
+    sync.undo_cursor_write(Path(report.journal))
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    (restored,) = conn.execute("SELECT workspaceId FROM composerHeaders WHERE value LIKE '%Refactor lexer%'").fetchone()
+    conn.close()
+    assert restored == "empty-window"
+
+
+def test_refile_is_deferred_while_cursor_runs(sync: SyncService, world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = tmp_path / "late-folder-2"
+    native_session(world, str(folder))
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    folder.mkdir()
+    monkeypatch.setattr(cursor_writer, "cursor_running", lambda profile: True)
+    report = sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert report.status == "deferred" and "Close Cursor" in report.detail
+
+
+def test_workspace_hash_matches_vscode_formula(tmp_path: Path) -> None:
+    import hashlib
+    import os
+
+    folder = tmp_path / "x"
+    folder.mkdir()
+    assert cursor_writer.workspace_hash(str(folder)) == hashlib.md5(f"{folder}{os.stat(folder).st_ino}".encode()).hexdigest()
+    assert cursor_writer.workspace_hash(str(tmp_path / "missing")) is None
 
 
 # --------------------------------------------------------------------------- follow-ups

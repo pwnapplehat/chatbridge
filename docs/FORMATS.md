@@ -10,6 +10,7 @@ Per profile (`~/.config/Cursor/User`, or `<--user-data-dir>/User`):
   - `composerData:<chat>`: the chat record (name, timestamps, `fullConversationHeadersOnly`, model/context settings, …).
   - `bubbleId:<chat>:<bubble>`: one record per message: user text (`type 1`), assistant text, reasoning (`capabilityType 30`, `thinking.text`), tool call (`capabilityType 15`, `toolFormerData{name, params, rawArgs, result, status, error}`).
 - table `composerHeaders(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, subagentTypeName, value)`: the chat list; `workspaceId` is the hash of the folder it belongs to (`workspaceStorage/<hash>/workspace.json`).
+- A chat belongs to the workspace named by `composerHeaders.workspaceId`, which Cursor/VS Code derives on Linux as `md5(folder path + folder inode)` (verified against every workspace in a real profile). Chats with `workspaceId = empty-window` only show in windows with no folder open.
 - Important: for large chats `fullConversationHeadersOnly` lists only a subset of the bubbles. The reader therefore reads **every** `bubbleId:<chat>:` row and orders by `createdAt`.
 - Key ranges (`key >= 'bubbleId:<chat>:' AND key < 'bubbleId:<chat>;'`) use the unique index; `LIKE` would scan the whole (often multi-GB) table.
 - `~/.cursor/projects/*/agent-transcripts/**/*.jsonl`: older/auxiliary transcripts (`{"role", "message": {"content": […]}}`), no tool outputs; read-only here.
