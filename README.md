@@ -30,8 +30,8 @@ Cursor and Claude each keep their chat history in their own format. If you start
 
 ```bash
 git clone https://github.com/pwnapplehat/chatbridge.git && cd chatbridge
-packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.1_all.deb (no root needed)
-sudo apt install ./dist/chatbridge_1.1.1_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
+packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.2_all.deb (no root needed)
+sudo apt install ./dist/chatbridge_1.1.2_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
 systemctl --user enable --now chatbridge-sync   # optional: background auto-sync
 ```
 

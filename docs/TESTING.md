@@ -12,7 +12,7 @@ Safety notes before you start:
 ## 1. Install
 
 ```bash
-sudo apt install ./chatbridge_1.1.1_all.deb       # from dist/ or the CI artifact
+sudo apt install ./chatbridge_1.1.2_all.deb       # from dist/ or the CI artifact
 chatbridge doctor
 man chatbridge | head
 ```
@@ -121,7 +121,7 @@ Turn on **Auto-sync** (header switch).
 
 ```bash
 sudo apt remove chatbridge     # data in ~/.local/share/chatbridge and ~/.config/chatbridge stays
-sudo apt install ./chatbridge_1.1.1_all.deb
+sudo apt install ./chatbridge_1.1.2_all.deb
 ```
 
 - [ ] After reinstalling, links and Activity history are still there (conversations still show **In sync**).

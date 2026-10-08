@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.2
+
+- Fix: after deleting one side of a pair (for example the Claude session), the surviving chat showed "Counterpart missing" and "Stop syncing" did nothing (it looked for the missing side to find the link). A link whose other side is gone is now ignored: the survivor is listed as "Only in Cursor" / "Only in Claude" and can be imported again (the stale link is replaced). "Stop syncing" removes the link by its own key.
+
 ## 1.1.1
 
 - Fix: long Cursor chats imported into Claude made the session far larger than the model's window (a 17,000-record chat is about 18.8 million tokens against 1 million), so it could not be continued and `/compact` failed. Big imports are now compacted the way Claude Code itself does it: the full history stays in the log, followed by a `compact_boundary`, a summary of the older part (extractive, no model call) and the latest turns (tool outputs capped at 20,000 characters), so the active context is about 55,000 tokens. Copies are flagged and never synced twice.

@@ -586,3 +586,44 @@ def test_estimate_tokens_counts_text_tool_inputs_and_outputs() -> None:
         ToolCall(0, "i", "T", {"k": "v"}, "o" * 100, False, 4),
     ]
     assert estimate_tokens(events) == (400 + 400 + 40 + len('{"k": "v"}') + 100) // 4
+
+
+# --------------------------------------------------------------------------- deleted counterparts
+def test_deleting_one_side_leaves_the_other_as_a_normal_unpaired_chat_that_can_be_reimported(sync: SyncService, world: World) -> None:
+    """Reported bug: after the Claude session was deleted the chat showed 'Counterpart missing' and Stop syncing did nothing."""
+    sync.sync(find(sync, cursor_id=CHAT_MAIN), apply=True)
+    paired = find(sync, cursor_id=CHAT_MAIN)
+    assert paired.claude is not None
+    paired.claude.log_path.unlink()
+    assert paired.claude.meta_path is not None
+    paired.claude.meta_path.unlink()  # what deleting the session in the Claude app removes
+
+    survivor = find(sync, cursor_id=CHAT_MAIN)
+    assert survivor.state is SyncState.CURSOR_ONLY and survivor.claude is None and survivor.link is None
+    report = sync.sync(survivor, apply=True)
+    assert report.status == "synced" and len(sync.links.all()) == 1, "re-importing replaces the stale link"
+    assert find(sync, cursor_id=CHAT_MAIN).state is SyncState.IN_SYNC
+
+
+def test_unlink_removes_a_link_even_when_the_claude_side_is_gone(sync: SyncService, world: World) -> None:
+    from dataclasses import replace
+
+    sync.sync(find(sync, cursor_id=CHAT_MAIN), apply=True)
+    paired = find(sync, cursor_id=CHAT_MAIN)
+    assert paired.link is not None
+    orphan = replace(paired, claude=None, state=SyncState.BROKEN)
+    sync.unlink(orphan)
+    assert sync.links.all() == []
+
+
+def test_claude_only_survivor_after_the_cursor_chat_is_deleted(sync: SyncService, world: World) -> None:
+    native_session(world)
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    conn.execute("DELETE FROM cursorDiskKV WHERE key LIKE 'bubbleId:%' AND value LIKE '%Refactor the lexer%'")
+    conn.execute("DELETE FROM cursorDiskKV WHERE key LIKE 'composerData:%' AND value LIKE '%Refactor lexer%'")
+    conn.execute("DELETE FROM composerHeaders WHERE value LIKE '%Refactor lexer%'")
+    conn.commit()
+    conn.close()
+    survivor = find(sync, claude_key=CLAUDE_KEY)
+    assert survivor.state is SyncState.CLAUDE_ONLY and survivor.cursor is None

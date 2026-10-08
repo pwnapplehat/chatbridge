@@ -261,7 +261,7 @@ class SyncService:
         for link in self.links.all():
             cursor = by_cursor.get((link.cursor_db, link.cursor_chat_id))
             claude = claude_by_key.get(link.claude_key)
-            if cursor or claude:
+            if cursor and claude:  # a link whose other side was deleted is stale: the survivor is listed as an unpaired chat
                 add(cursor, claude, link, link.origin)
         for session in sessions:
             if session.key in used_claude:
@@ -630,5 +630,7 @@ class SyncService:
 
     def unlink(self, conversation: Conversation) -> None:
         """Stop tracking a pair (both conversations stay as they are)."""
-        if conversation.claude:
+        if conversation.link is not None:
+            self.links.remove(conversation.link.claude_key)
+        elif conversation.claude:
             self.links.remove(conversation.claude.key)
