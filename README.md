@@ -26,13 +26,18 @@ Cursor and Claude each keep their chat history in their own format. If you start
 
 ## Install (Ubuntu / Debian-based)
 
+**Ubuntu 24.04+ / Debian 13+ (recommended): the `.deb`**
+
 ```bash
-sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-venv
 git clone https://github.com/pwnapplehat/chatbridge.git && cd chatbridge
-./install.sh               # app menu entry "ChatBridge" + `chatbridge` / `chatbridge-gui` commands
-./install.sh --service     # additionally run auto-sync as a systemd user service
-./install.sh --uninstall
+packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.0.0_all.deb (no root needed)
+sudo apt install ./dist/chatbridge_1.0.0_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
+systemctl --user enable --now chatbridge-sync   # optional: background auto-sync
 ```
+
+Other distributions or no root: `./install.sh` (user-level; tells you which GTK4/libadwaita packages to add for Fedora, Arch, openSUSE), `./install.sh --service`, `./install.sh --uninstall`. Details and the support matrix: [docs/PACKAGING.md](docs/PACKAGING.md).
+
+Please follow the [manual test plan](docs/TESTING.md) for the parts only a real Cursor and Claude can verify.
 
 Without installing: `python3 -m venv .venv --system-site-packages && .venv/bin/pip install -e . && .venv/bin/python -m chatbridge.gui`.
 

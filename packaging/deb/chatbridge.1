@@ -1,0 +1,69 @@
+.TH CHATBRIDGE 1 "October 2026" "chatbridge 1.0.0" "User Commands"
+.SH NAME
+chatbridge \- two-way chat history sync between Cursor and Claude
+.SH SYNOPSIS
+.B chatbridge
+.I command
+[options]
+.SH DESCRIPTION
+ChatBridge reads chats from Cursor and sessions from Claude (desktop app and Claude Code), pairs the ones that belong
+together and appends the messages each side is missing to the other. Messages, reasoning and tool calls are kept.
+Syncing is append-only and idempotent; nothing is rewritten or deleted. Every command is a dry run unless
+.B \-\-apply
+is given, and nothing is selected implicitly.
+.SH COMMANDS
+.TP
+.B list
+Show all conversations with their sync state.
+.TP
+.B sync
+Sync or import the selected conversations. Select with
+.BI \-\-chat " ID"
+(Cursor chat id prefix),
+.BI \-\-claude " KEY"
+(Claude session key or id prefix),
+.B \-\-linked
+(every paired conversation) or
+.B \-\-all
+(everything in both tools).
+.TP
+.B watch
+Auto-sync loop for already linked conversations (\fB\-\-interval\fR seconds, \fB\-\-once\fR for one pass).
+.TP
+.B cursor\-undo
+Revert one write made into Cursor, using the journal printed by
+.BR sync :
+.BI \-\-journal " FILE".
+.TP
+.B doctor
+Print what ChatBridge can see on this machine.
+.TP
+.B inventory, import, verify, undo
+The original one-way Cursor to Claude importer commands.
+.SH OPTIONS
+.TP
+.B \-\-apply
+Write changes (default: dry run).
+.TP
+.BI \-\-direction " both|to\-claude|to\-cursor"
+Limit the sync direction.
+.TP
+.BI \-\-cursor\-profile " LABEL"
+Cursor profile that receives new chats created from Claude.
+.TP
+.BI \-\-profile " LABEL=PATH"
+Additional (backup) Cursor user-data folder, read-only.
+.SH SAFETY
+Cursor is never written while it is running on the target profile; such changes are deferred. Every write into a
+Cursor database is journaled in ~/.local/share/chatbridge/journal and can be reverted with
+.BR cursor\-undo .
+.SH FILES
+.TP
+.I ~/.local/share/chatbridge/
+Link database, undo journals, undone imports.
+.TP
+.I ~/.config/chatbridge/settings.json
+Settings of the graphical application.
+.SH SEE ALSO
+.BR chatbridge\-gui (1),
+https://github.com/pwnapplehat/chatbridge

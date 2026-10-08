@@ -32,3 +32,35 @@ jobs:
         run: |
           .venv/bin/pip wheel . --no-deps -w dist -q
           python3 -m zipfile -l dist/*.whl | grep -q "chatbridge/data/cursor_templates.json"
+
+  deb:
+    runs-on: ubuntu-24.04
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the .deb
+        run: packaging/deb/build-deb.sh dist
+      - name: Validate package metadata
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y desktop-file-utils appstream xvfb
+          dpkg-deb --info dist/*.deb
+          dpkg -x dist/*.deb /tmp/payload
+          desktop-file-validate /tmp/payload/usr/share/applications/*.desktop
+          appstreamcli validate --no-net /tmp/payload/usr/share/metainfo/*.xml
+      - name: Install on a clean Ubuntu 24.04 (apt resolves dependencies)
+        run: sudo apt-get install -y ./dist/chatbridge_*_all.deb
+      - name: Smoke test the installed package
+        run: |
+          chatbridge --help >/dev/null
+          chatbridge doctor
+          xvfb-run -a timeout 12 chatbridge-gui >/tmp/gui.log 2>&1 || test $? -eq 124
+          ! grep -i -E "traceback|critical" /tmp/gui.log
+      - name: Uninstall leaves nothing behind
+        run: |
+          sudo apt-get remove -y chatbridge
+          test ! -e /usr/bin/chatbridge && test ! -d /usr/lib/python3/dist-packages/chatbridge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chatbridge-deb
+          path: dist/*.deb

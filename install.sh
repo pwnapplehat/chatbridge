@@ -23,7 +23,15 @@ if [[ "${1:-}" == "--uninstall" ]]; then
 fi
 
 python3 -c "import gi; gi.require_version('Gtk','4.0'); gi.require_version('Adw','1')" 2>/dev/null || {
-  echo "GTK4 + libadwaita Python bindings are missing. On Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1" >&2
+  . /etc/os-release 2>/dev/null || true
+  case "${ID:-} ${ID_LIKE:-}" in
+    *debian*|*ubuntu*) hint="sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-venv" ;;
+    *fedora*|*rhel*)   hint="sudo dnf install python3-gobject gtk4 libadwaita" ;;
+    *arch*)            hint="sudo pacman -S python-gobject gtk4 libadwaita" ;;
+    *suse*)            hint="sudo zypper install python3-gobject typelib-1_0-Gtk-4_0 typelib-1_0-Adw-1" ;;
+    *)                 hint="install the Python GObject bindings plus GTK 4 and libadwaita (>= 1.5) typelibs" ;;
+  esac
+  echo "GTK4 + libadwaita Python bindings are missing. Try: $hint" >&2
   exit 1
 }
 

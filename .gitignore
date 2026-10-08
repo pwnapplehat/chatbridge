@@ -8,3 +8,4 @@ _removed_imports/
 .soak/
 build/
 *.egg-info/
+dist/

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "chatbridge"
-version = "1.0.0"
+dynamic = ["version"]
 description = "Import Cursor chat history into the Claude desktop app, losslessly (Ubuntu / GTK4)"
 requires-python = ">=3.11"
 readme = "README.md"
@@ -26,6 +26,9 @@ Issues = "https://github.com/pwnapplehat/chatbridge/issues"
 [project.scripts]
 chatbridge = "chatbridge.cli:main_entry"
 chatbridge-gui = "chatbridge.gui.app:main_entry"
+
+[tool.setuptools.dynamic]
+version = { attr = "chatbridge.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["chatbridge*"]

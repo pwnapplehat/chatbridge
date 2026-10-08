@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.pwnapplehat.ChatBridge</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>ChatBridge</name>
+  <developer id="io.github.pwnapplehat">
+    <name>ChatBridge contributors</name>
+  </developer>
+  <summary>Two-way chat history sync between Cursor and Claude</summary>
+  <description>
+    <p>
+      ChatBridge keeps your conversations in step between Cursor and Claude. Continue a task in either tool and carry it
+      over to the other, with every message, the model's reasoning and all tool calls with their outputs.
+    </p>
+    <ul>
+      <li>Import and sync in both directions, including conversations continued in both tools</li>
+      <li>Append-only and reversible: nothing is rewritten or deleted, and every write into Cursor can be undone</li>
+      <li>Optional auto-sync for conversations that are already paired</li>
+      <li>Supports several Cursor profiles and read-only backups</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.pwnapplehat.ChatBridge.desktop</launchable>
+  <url type="homepage">https://github.com/pwnapplehat/chatbridge</url>
+  <url type="bugtracker">https://github.com/pwnapplehat/chatbridge/issues</url>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/pwnapplehat/chatbridge/main/docs/images/main.png</image>
+      <caption>Conversations from both tools with their sync state</caption>
+    </screenshot>
+  </screenshots>
+  <content_rating type="oars-1.1"/>
+  <provides>
+    <binary>chatbridge</binary>
+    <binary>chatbridge-gui</binary>
+  </provides>
+  <releases>
+    <release version="1.0.0" date="2026-10-08"/>
+  </releases>
+</component>
