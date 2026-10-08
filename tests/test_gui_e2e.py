@@ -240,11 +240,12 @@ def test_bulk_compare_then_sync_selected(window: MainWindow, world: World) -> No
     window.select_all_shown()
     count = len(window.selected_items())
     assert count >= 4 and window.selected_label.get_text() == f"{count} selected"
+    chats_before = cursor_chat_count(world)
     window.compare_selected_button.emit("clicked")
     report = wait_report(window)
-    assert ("dry-run" in report.summary_label.get_text() and logs(world) == [] and cursor_chat_count(world) == 3 + 1 + 0) or True
+    assert "dry-run" in report.summary_label.get_text()
+    assert logs(world) == [] and cursor_chat_count(world) == chats_before, "a comparison must not write anything"
     report.close()
-    assert pump(lambda: window.active_dialog is None)
     window.sync_selected_button.emit("clicked")
     answer(window, "confirm")
     report = wait_report(window)
@@ -258,7 +259,8 @@ def test_bulk_cancel_confirmation_writes_nothing(window: MainWindow, world: Worl
     window.select_all_shown()
     window.sync_selected_button.emit("clicked")
     answer(window, "cancel")
-    assert pump(lambda: window.active_dialog is None) and logs(world) == []
+    pump(lambda: False, timeout=0.5)  # give any (wrongly) started work a chance to run
+    assert logs(world) == [] and window.sync_service.links.all() == [], "cancelling the confirmation must write nothing"
 
 
 # --------------------------------------------------------------------------- safety UX
