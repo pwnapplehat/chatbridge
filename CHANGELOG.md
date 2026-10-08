@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+- New: a chat created in Cursor from a Claude session now adds its project folder to Cursor's "Recent projects" (only when the folder is not already there; the previous list is journaled and restored by Undo).
+- New: Cursor's context-usage meter is filled with an estimate (about 4 characters per token) instead of 0, for new chats, for messages appended later, and for chats created by 1.0.0/1.0.1 (repaired on the next sync). Cursor replaces it with the real figure after the next message.
+- The repair step is now one journaled transaction covering workspace, recent projects and context estimate; Compare and the confirmation dialog list each fix.
+
 ## 1.0.1
 
 - Fix: chats sent from Claude to Cursor are now filed under the workspace Cursor will assign to the project folder (`md5(path + inode)` on Linux), even if that folder was never opened in Cursor. Previously they landed under "no folder" and were invisible when the project folder was opened.

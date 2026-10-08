@@ -49,6 +49,8 @@ COMPOSER_KEY = "composerData:"
 BUBBLE_KEY = "bubbleId:"
 DEFAULT_MODEL = "default"
 CONTEXT_LIMIT = 256000
+RECENTS_KEY = "history.recentlyOpenedPathsList"
+CHARS_PER_TOKEN = 4
 
 
 class CursorBusyError(ImporterError):
@@ -244,7 +246,7 @@ def header_value(composer: JsonObj, workspace: JsonObj) -> JsonObj:
     return {
         "type": "head", "composerId": composer["composerId"], "name": composer["name"], "lastUpdatedAt": composer["lastUpdatedAt"],
         "conversationCheckpointLastUpdatedAt": composer["conversationCheckpointLastUpdatedAt"], "createdAt": composer["createdAt"],
-        "unifiedMode": "agent", "forceMode": "edit", "hasUnreadMessages": False, "contextUsagePercent": 0, "totalLinesAdded": 0,
+        "unifiedMode": "agent", "forceMode": "edit", "hasUnreadMessages": False, "contextUsagePercent": composer.get("contextUsagePercent", 0), "totalLinesAdded": 0,
         "totalLinesRemoved": 0, "filesChangedCount": 0, "subtitle": as_str(composer.get("subtitle")), "hasBlockingPendingActions": False,
         "hasPendingPlan": False, "isDraft": False, "isWorktree": False, "worktreeStartedReadOnly": False, "isSpec": False,
         "isProject": False, "isBestOfNSubcomposer": False, "numSubComposers": 0, "referencedPlans": [], "trackedGitRepos": [],
@@ -312,7 +314,9 @@ def upsert_events(
         composer["conversationCheckpointLastUpdatedAt"] = composer["lastUpdatedAt"]
         composer["status"] = "completed"
         composer["generatingBubbleIds"] = []
-        journal = _write_journal(journal_dir, profile, composer_id, created, inserted, previous_composer, header_row)
+        _set_context(composer, int(composer.get("contextTokensUsed") or 0) + estimate_tokens(events))  # type: ignore[call-overload]
+        recents = _put_recents(conn, folder) if created and ws_hash != "empty-window" else (False, None)
+        journal = _write_journal(journal_dir, profile, composer_id, created, inserted, previous_composer, header_row, recents)
         conn.execute(
             "INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?, ?)",
             (COMPOSER_KEY + composer_id, json.dumps(composer, ensure_ascii=False)),
@@ -345,47 +349,140 @@ def upsert_events(
         conn.close()
 
 
-def refile_chat(profile: CursorProfile, composer_id: str, folder: str, journal_dir: Path) -> WriteResult | None:
-    """Move an existing chat into the workspace of `folder` (journaled, undoable).
+def repair_chat(
+    profile: CursorProfile, composer_id: str, folder: str | None, context_tokens: int | None, journal_dir: Path
+) -> WriteResult | None:
+    """Fix metadata of a ChatBridge-created chat in one journaled transaction (undoable).
 
-    Used to repair chats that were filed under 'no folder' because the folder was unknown at the time. Returns None
-    when there is nothing to do (chat missing, folder unresolvable, or already in that workspace).
+    * file it under the workspace of `folder` if it sits in 'no folder' (folder was unknown when it was created);
+    * add `folder` to Cursor's recent projects if missing;
+    * set the context-usage estimate if the stored figure is 0.
+
+    Returns None when there is nothing to do.
     """
     if not profile.writable:
         raise CursorWriteError(f"profile '{profile.label}' is read-only (a backup); choose a live Cursor profile")
     if cursor_running(profile):
         raise CursorBusyError(f"Cursor is running on profile '{profile.label}'. Close Cursor, then try again.")
     ws_hash, workspace = workspace_for_folder(profile, folder)
-    if ws_hash == "empty-window":
-        return None
     conn = sqlite3.connect(profile.db_path, timeout=30, isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (COMPOSER_KEY + composer_id,)).fetchone()
         header_row = conn.execute("SELECT * FROM composerHeaders WHERE composerId = ?", (composer_id,)).fetchone()
-        if row is None or header_row is None or header_row[1] == ws_hash:
+        if row is None or header_row is None:
             conn.execute("ROLLBACK")
             return None
         composer = as_obj(json.loads(row[0]))
-        composer["workspaceIdentifier"] = workspace
         head = as_obj(json.loads(str(header_row[-1])))
-        head["workspaceIdentifier"] = workspace
-        journal = _write_journal(journal_dir, profile, composer_id, False, [], row[0], header_row)
+        refile = ws_hash != "empty-window" and header_row[1] != ws_hash
+        set_context = context_tokens is not None and int(composer.get("contextTokensUsed") or 0) == 0  # type: ignore[call-overload]
+        recents_previous, recents_new = _recents_with_folder(conn, folder) if folder and Path(folder).is_dir() else (None, None)
+        if not (refile or set_context or recents_new is not None):
+            conn.execute("ROLLBACK")
+            return None
+        journal = _write_journal(
+            journal_dir, profile, composer_id, False, [], row[0], header_row, (recents_new is not None, recents_previous)
+        )
+        if refile:
+            composer["workspaceIdentifier"] = workspace
+            head["workspaceIdentifier"] = workspace
+        if set_context and context_tokens is not None:
+            _set_context(composer, context_tokens)
+            head["contextUsagePercent"] = composer["contextUsagePercent"]
         conn.execute(
             "UPDATE cursorDiskKV SET value = ? WHERE key = ?", (json.dumps(composer, ensure_ascii=False), COMPOSER_KEY + composer_id)
         )
         conn.execute(
             "UPDATE composerHeaders SET workspaceId = ?, value = ? WHERE composerId = ?",
-            (ws_hash, json.dumps(head, ensure_ascii=False), composer_id),
+            (ws_hash if refile else header_row[1], json.dumps(head, ensure_ascii=False), composer_id),
         )
+        if recents_new is not None:
+            conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, recents_new))
         conn.execute("COMMIT")
         return WriteResult(composer_id, False, 0, journal)
     except sqlite3.Error as exc:
         _rollback(conn)
-        raise CursorWriteError(f"re-filing chat {composer_id} failed: {exc}") from exc
+        raise CursorWriteError(f"repairing chat {composer_id} failed: {exc}") from exc
     except BaseException:
         _rollback(conn)
         raise
+    finally:
+        conn.close()
+
+
+def estimate_tokens(events: list[Event]) -> int:
+    """Rough token count of events (about 4 characters per token), used for Cursor's context-usage meter.
+
+    It is an estimate, not a tokenizer: Cursor replaces it with the real figure after the next message in the chat.
+    """
+    chars = 0
+    for event in events:
+        if isinstance(event, (UserText, AssistantText, Reasoning)):
+            chars += len(event.text)
+        elif isinstance(event, ToolCall):
+            chars += len(json.dumps(event.tool_input, ensure_ascii=False)) + len(event.output or "")
+    return chars // CHARS_PER_TOKEN
+
+
+def _set_context(composer: JsonObj, tokens: int) -> None:
+    """Record `tokens` as the chat's context usage (all three places Cursor reads it)."""
+    limit = int(composer.get("contextTokenLimit") or CONTEXT_LIMIT)  # type: ignore[call-overload]
+    composer["contextTokensUsed"] = tokens
+    composer["contextTokenLimit"] = limit
+    composer["contextUsagePercent"] = round(min(100.0, tokens * 100 / limit), 3)
+    composer["promptTokenBreakdown"] = {"totalUsedTokens": tokens, "maxTokens": limit, "categories": []}
+
+
+def _recents_with_folder(conn: sqlite3.Connection, folder: str) -> tuple[str | None, str | None]:
+    """(previous value, new value) of Cursor's recent-projects list with `folder` added at the front; new is None if unchanged."""
+    row = conn.execute("SELECT value FROM ItemTable WHERE key = ?", (RECENTS_KEY,)).fetchone()
+    previous = row[0] if row else None
+    parsed = as_obj(json.loads(previous)) if isinstance(previous, str) and previous else {}
+    entries = as_list(parsed.get("entries"))
+    uri = f"file://{folder}"
+    if any(as_str(as_obj(entry).get("folderUri")) == uri for entry in entries):
+        return previous if isinstance(previous, str) else None, None
+    parsed["entries"] = [{"folderUri": uri}, *entries]
+    return previous if isinstance(previous, str) else None, json.dumps(parsed, ensure_ascii=False)
+
+
+def _put_recents(conn: sqlite3.Connection, folder: str | None) -> tuple[bool, str | None]:
+    """Add the project folder to Cursor's recent projects. Returns (changed, previous value) for the journal."""
+    if not folder or not Path(folder).is_dir():
+        return False, None
+    previous, new = _recents_with_folder(conn, folder)
+    if new is None:
+        return False, None
+    conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, new))
+    return True, previous
+
+
+def folder_in_recents(profile: CursorProfile, folder: str) -> bool:
+    """Whether the folder is already in the profile's recent projects (read-only check)."""
+    try:
+        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return True
+    try:
+        return _recents_with_folder(conn, folder)[1] is None
+    except sqlite3.Error:
+        return True
+    finally:
+        conn.close()
+
+
+def chat_context_tokens(profile: CursorProfile, composer_id: str) -> int | None:
+    """Stored context-token figure of a chat (None if the chat is missing)."""
+    try:
+        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute("SELECT value FROM cursorDiskKV WHERE key = ?", (COMPOSER_KEY + composer_id,)).fetchone()
+        return int(as_obj(json.loads(row[0])).get("contextTokensUsed") or 0) if row else None  # type: ignore[call-overload]
+    except (sqlite3.Error, ValueError):
+        return None
     finally:
         conn.close()
 
@@ -415,14 +512,15 @@ def _workspace_of(header_row: tuple[object, ...] | None, fallback: JsonObj) -> J
 # --------------------------------------------------------------------------- journal / undo
 def _write_journal(
     journal_dir: Path, profile: CursorProfile, composer_id: str, created: bool, inserted: list[str],
-    previous_composer: object, header_row: tuple[object, ...] | None,
+    previous_composer: object, header_row: tuple[object, ...] | None, recents: tuple[bool, str | None] = (False, None),
 ) -> Path:  # fmt: skip
     journal_dir.mkdir(parents=True, exist_ok=True)
     path = journal_dir / f"{time.strftime('%Y%m%d-%H%M%S')}-{composer_id}.json"
     payload = {
-        "profile_db": str(profile.db_path), "profile_label": profile.label, "composer_id": composer_id, "created": created, "inserted_keys": inserted,
-        "previous_composer": previous_composer if isinstance(previous_composer, str) else None,
+        "profile_db": str(profile.db_path), "profile_label": profile.label, "composer_id": composer_id, "created": created,
+        "inserted_keys": inserted, "previous_composer": previous_composer if isinstance(previous_composer, str) else None,
         "previous_header_row": list(header_row) if header_row else None,
+        "recents": {"changed": recents[0], "previous": recents[1]},
     }  # fmt: skip
     partial = path.with_name(path.name + ".partial")
     with partial.open("w", encoding="utf-8") as handle:
@@ -450,6 +548,13 @@ def undo_journal(profile: CursorProfile, journal: Path) -> int:
             conn.execute("INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?, ?)", (COMPOSER_KEY + composer_id, previous))
         else:
             conn.execute("DELETE FROM cursorDiskKV WHERE key = ?", (COMPOSER_KEY + composer_id,))
+        recents = as_obj(data.get("recents"))
+        if recents.get("changed") is True:
+            previous_recents = recents.get("previous")
+            if isinstance(previous_recents, str):
+                conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, previous_recents))
+            else:
+                conn.execute("DELETE FROM ItemTable WHERE key = ?", (RECENTS_KEY,))
         old_header = as_list(data.get("previous_header_row"))
         if old_header:
             conn.execute("INSERT OR REPLACE INTO composerHeaders VALUES (?,?,?,?,?,?,?,?,?,?)", tuple(old_header))

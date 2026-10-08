@@ -459,3 +459,130 @@ def test_read_only_commands_leave_no_files_behind(sync: SyncService, world: Worl
     sync.load_conversations()
     sync.sync(find(sync, cursor_id=CHAT_MAIN), apply=False)
     assert not world.paths.links_db.exists() and not world.paths.data_dir.exists(), "listing and dry runs must not create the link database"
+
+
+# --------------------------------------------------------------------------- recent projects and context meter
+RECENTS_KEY = "history.recentlyOpenedPathsList"
+
+
+def read_recents(world: World) -> list[str] | None:
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    row = conn.execute("SELECT value FROM ItemTable WHERE key = ?", (RECENTS_KEY,)).fetchone()
+    conn.close()
+    return None if row is None else [e["folderUri"] for e in json.loads(row[0])["entries"] if "folderUri" in e]
+
+
+def set_recents(world: World, folders: list[str]) -> str:
+    value = json.dumps({"entries": [{"folderUri": f"file://{f}"} for f in folders] + [{"fileUri": "file:///some/file.txt"}]})
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, value))
+    conn.commit()
+    conn.close()
+    return value
+
+
+def composer_of(world: World, title_fragment: str) -> dict[str, object]:
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    row = conn.execute(
+        "SELECT value FROM cursorDiskKV WHERE key LIKE 'composerData:%' AND value LIKE ?", (f"%{title_fragment}%",)
+    ).fetchone()
+    conn.close()
+    return json.loads(row[0])  # type: ignore[no-any-return]
+
+
+def test_new_chat_appears_in_recent_projects_and_has_a_context_estimate(sync: SyncService, world: World) -> None:
+    from chatbridge.cursor_writer import estimate_tokens
+
+    native_session(world)
+    assert read_recents(world) is None
+    report = sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert read_recents(world) == [f"file://{world.project_dir}"]
+    composer = composer_of(world, "Refactor lexer")
+    expected = estimate_tokens(read_claude_events(find(sync, claude_key=CLAUDE_KEY).claude))  # type: ignore[arg-type]
+    assert composer["contextTokensUsed"] == expected > 0
+    assert composer["contextUsagePercent"] == round(expected * 100 / 256000, 3)
+    assert composer["promptTokenBreakdown"]["totalUsedTokens"] == expected  # type: ignore[index]
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    head = json.loads(conn.execute("SELECT value FROM composerHeaders WHERE value LIKE '%Refactor lexer%'").fetchone()[0])
+    conn.close()
+    assert head["contextUsagePercent"] == composer["contextUsagePercent"]
+    sync.undo_cursor_write(Path(report.journal))
+    assert read_recents(world) is None, "undo must remove a recents list it created"
+
+
+def test_recent_projects_keep_existing_entries_and_are_restored_exactly(sync: SyncService, world: World, tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    before = set_recents(world, [str(other)])
+    native_session(world)
+    report = sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert read_recents(world) == [f"file://{world.project_dir}", f"file://{other}"], "new project goes first, others are kept"
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    assert '"fileUri"' in conn.execute("SELECT value FROM ItemTable WHERE key = ?", (RECENTS_KEY,)).fetchone()[0], "unrelated entries kept"
+    conn.close()
+    sync.undo_cursor_write(Path(report.journal))
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    assert conn.execute("SELECT value FROM ItemTable WHERE key = ?", (RECENTS_KEY,)).fetchone()[0] == before
+    conn.close()
+
+
+def test_folder_already_in_recents_is_not_duplicated(sync: SyncService, world: World) -> None:
+    set_recents(world, [str(world.project_dir)])
+    native_session(world)
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert read_recents(world) == [f"file://{world.project_dir}"]
+
+
+def test_missing_folder_is_not_added_to_recents(sync: SyncService, world: World, tmp_path: Path) -> None:
+    native_session(world, str(tmp_path / "gone"))
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert read_recents(world) is None
+
+
+def test_old_style_chat_is_repaired_context_and_recents_and_undone(sync: SyncService, world: World) -> None:
+    """Chats written by 1.0.0 had a 0 context meter and no recent-projects entry; a sync fills both in."""
+    native_session(world)
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
+    key, value = conn.execute(
+        "SELECT key, value FROM cursorDiskKV WHERE key LIKE 'composerData:%' AND value LIKE '%Refactor lexer%'"
+    ).fetchone()
+    data = json.loads(value)
+    data["contextTokensUsed"], data["contextUsagePercent"] = 0, 0
+    conn.execute("UPDATE cursorDiskKV SET value = ? WHERE key = ?", (json.dumps(data), key))
+    conn.execute("DELETE FROM ItemTable WHERE key = ?", (RECENTS_KEY,))
+    conn.commit()
+    conn.close()
+
+    conv = find(sync, claude_key=CLAUDE_KEY)
+    dry = sync.sync(conv, apply=False)
+    assert any("recent projects" in f for f in dry.fixes) and any("context-usage" in f for f in dry.fixes)
+    assert read_recents(world) is None and composer_of(world, "Refactor lexer")["contextTokensUsed"] == 0, "a dry run must not write"
+    report = sync.sync(conv, apply=True)
+    assert report.status == "synced" and report.journal
+    assert read_recents(world) == [f"file://{world.project_dir}"] and int(composer_of(world, "Refactor lexer")["contextTokensUsed"]) > 0  # type: ignore[call-overload]
+    assert sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True).status == "noop", "repair is idempotent"
+
+    sync.undo_cursor_write(Path(report.journal))
+    assert read_recents(world) is None and composer_of(world, "Refactor lexer")["contextTokensUsed"] == 0
+
+
+def test_appending_to_a_chat_adds_to_its_context_figure(sync: SyncService, world: World) -> None:
+    native_session(world)
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    before = int(composer_of(world, "Refactor lexer")["contextTokensUsed"])  # type: ignore[call-overload]
+    claude_follow_up(world, CLAUDE_CLI, [("u", "x" * 4000), ("a", "y" * 2000)])
+    sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
+    assert int(composer_of(world, "Refactor lexer")["contextTokensUsed"]) == before + 1500  # type: ignore[call-overload]
+
+
+def test_estimate_tokens_counts_text_tool_inputs_and_outputs() -> None:
+    from chatbridge.cursor_writer import estimate_tokens
+
+    events: list[Event] = [
+        UserText("a" * 400, 1),
+        AssistantText("b" * 400, 2),
+        Reasoning("c" * 40, 3),
+        ToolCall(0, "i", "T", {"k": "v"}, "o" * 100, False, 4),
+    ]
+    assert estimate_tokens(events) == (400 + 400 + 40 + len('{"k": "v"}') + 100) // 4

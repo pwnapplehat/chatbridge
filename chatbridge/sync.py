@@ -36,8 +36,11 @@ from .converter import NO_ERROR_DETAIL_TEXT, NO_OUTPUT_TEXT
 from .cursor_source import BUBBLE_PREFIX, COMPOSER_PREFIX, CursorProfile, iter_events, key_range, open_readonly
 from .cursor_writer import (
     CursorBusyError,
+    chat_context_tokens,
     cursor_chat_id_for_claude,
-    refile_chat,
+    estimate_tokens,
+    folder_in_recents,
+    repair_chat,
     undo_journal,
     upsert_events,
     workspace_for_folder,
@@ -121,6 +124,16 @@ class SyncReport:
     journal: str = ""
     notes: list[str] = field(default_factory=list)
     fixes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class RepairPlan:
+    """Metadata fixes to apply to a ChatBridge-created Cursor chat."""
+
+    profile: CursorProfile
+    folder: str | None
+    tokens: int | None
+    descriptions: list[str]
 
 
 @dataclass(frozen=True)
@@ -283,9 +296,15 @@ class SyncService:
     # ------------------------------------------------------------------ planning
     def plan(self, conversation: Conversation) -> tuple[list[Event], list[Event]]:
         """(events to append to Claude, events to append to Cursor) from an exact event-level comparison."""
+        to_claude, to_cursor, _ = self._plan_events(conversation)
+        return to_claude, to_cursor
+
+    @staticmethod
+    def _plan_events(conversation: Conversation) -> tuple[list[Event], list[Event], list[Event]]:
+        """Like plan(), also returning the Cursor-side events that were read."""
         cursor_events = read_cursor_events(conversation.cursor.ref) if conversation.cursor else []
         claude_events = read_claude_events(conversation.claude) if conversation.claude else []
-        return missing_events(cursor_events, claude_events), missing_events(claude_events, cursor_events)
+        return missing_events(cursor_events, claude_events), missing_events(claude_events, cursor_events), cursor_events
 
     # ------------------------------------------------------------------ applying
     def sync(
@@ -315,7 +334,7 @@ class SyncService:
 
     def _sync_pair(self, conv: Conversation, direction: Direction, apply: bool, report: SyncReport) -> None:
         assert conv.cursor and conv.claude
-        to_claude, to_cursor = self.plan(conv)
+        to_claude, to_cursor, cursor_events = self._plan_events(conv)
         if direction == "to-claude":
             to_cursor = []
         if direction == "to-cursor":
@@ -324,23 +343,24 @@ class SyncService:
             to_cursor = []
             report.notes.append("Cursor transcript files are read-only: messages can flow Cursor -> Claude only.")
         report.to_claude, report.to_cursor = len(to_claude), len(to_cursor)
-        refile = self._refile_target(conv)
-        if refile is not None:
-            report.fixes.append(f"move the Cursor chat into the project folder {refile[1]} (it is filed under 'no folder')")
-        if not to_claude and not to_cursor and refile is None:
+        repair = self._repair_plan(conv, cursor_events) if direction != "to-claude" else None
+        if repair is not None:
+            report.fixes.extend(repair.descriptions)
+        if not to_claude and not to_cursor and repair is None:
             report.status = "noop" if apply else "dry-run"
             self._remember(conv, conv.link)
             return
         if not apply:
             return
         deferred: list[str] = []
-        if refile is not None:
-            try:
-                moved = refile_chat(refile[0], conv.cursor.ref.chat_id, refile[1], self.paths.journal_dir)
-                report.journal = str(moved.journal_path) if moved and moved.journal_path else report.journal
-            except (CursorBusyError, ImporterError) as exc:
-                deferred.append(str(exc))
         cursor_done = claude_done = True
+        if repair is not None:
+            try:
+                fixed = repair_chat(repair.profile, conv.cursor.ref.chat_id, repair.folder, repair.tokens, self.paths.journal_dir)
+                report.journal = str(fixed.journal_path) if fixed and fixed.journal_path else report.journal
+            except (CursorBusyError, ImporterError) as exc:
+                cursor_done = False
+                deferred.append(str(exc))
         if to_claude:
             try:
                 append_events_to_claude(conv.claude.log_path, conv.claude.meta_path, conv.cursor.ref.chat_id, to_claude)
@@ -360,19 +380,31 @@ class SyncService:
         report.status = "deferred" if deferred else "synced"
         report.detail = " ".join(deferred)
         # A side whose new events could not be delivered stays marked dirty so it keeps showing as changed.
-        self._remember(conv, conv.link, claude_dirty=bool(to_cursor) and not cursor_done, cursor_dirty=bool(to_claude) and not claude_done)
+        self._remember(
+            conv,
+            conv.link,
+            claude_dirty=(bool(to_cursor) or repair is not None) and not cursor_done,
+            cursor_dirty=bool(to_claude) and not claude_done,
+        )
 
-    def _refile_target(self, conv: Conversation) -> tuple[CursorProfile, str] | None:
-        """(profile, folder) when a ChatBridge-created Cursor chat sits in 'no folder' but its folder is now resolvable."""
-        if not (conv.link and conv.link.origin == "claude" and conv.cursor and conv.claude):
-            return None
-        if conv.cursor.ref.kind != "db" or conv.cursor.ref.cwd or not conv.claude.cwd or not Path(conv.claude.cwd).is_dir():
+    def _repair_plan(self, conv: Conversation, cursor_events: list[Event]) -> RepairPlan | None:
+        """Metadata fixes for a ChatBridge-created Cursor chat: workspace, recent projects, context estimate."""
+        if not (conv.link and conv.link.origin == "claude" and conv.cursor and conv.claude) or conv.cursor.ref.kind != "db":
             return None
         profile = self.profile_for(str(conv.cursor.ref.source_path))
         if profile is None or not profile.writable:
             return None
-        workspace_id, _ = workspace_for_folder(profile, conv.claude.cwd)
-        return (profile, conv.claude.cwd) if workspace_id != "empty-window" else None
+        folder = conv.claude.cwd if conv.claude.cwd and Path(conv.claude.cwd).is_dir() else None
+        descriptions: list[str] = []
+        if folder and not conv.cursor.ref.cwd and workspace_for_folder(profile, folder)[0] != "empty-window":
+            descriptions.append(f"move the Cursor chat into the project folder {folder} (it is filed under 'no folder')")
+        if folder and not folder_in_recents(profile, folder):
+            descriptions.append(f"add {folder} to Cursor's recent projects")
+        tokens: int | None = None
+        if cursor_events and chat_context_tokens(profile, conv.cursor.ref.chat_id) == 0:
+            tokens = estimate_tokens(cursor_events)
+            descriptions.append(f"fill in Cursor's context-usage estimate (about {tokens:,} tokens)")
+        return RepairPlan(profile, folder, tokens, descriptions) if descriptions else None
 
     def _create_claude_side(self, conv: Conversation, direction: Direction, apply: bool, cwd: str | None, report: SyncReport) -> None:
         assert conv.cursor
