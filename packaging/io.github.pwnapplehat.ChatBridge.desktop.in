@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ChatBridge
+GenericName=Chat history sync
+Comment=Two-way chat history sync between Cursor and Claude
+Exec=@LAUNCHER@
+Icon=io.github.pwnapplehat.ChatBridge
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=io.github.pwnapplehat.ChatBridge

@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages (GTK4, libadwaita, Xvfb)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-venv xvfb
+      - name: Virtualenv with dev tools
+        run: |
+          python3 -m venv .venv --system-site-packages
+          .venv/bin/pip install -e . mypy pytest ruff
+      - name: Lint
+        run: |
+          .venv/bin/ruff check chatbridge tests scripts
+          .venv/bin/ruff format --check chatbridge tests scripts
+      - name: Types (mypy --strict)
+        run: .venv/bin/mypy
+      - name: Unit + CLI end-to-end tests
+        run: .venv/bin/pytest -W ignore --deselect tests/test_gui_e2e.py
+      - name: GUI end-to-end tests (virtual display)
+        run: xvfb-run -a .venv/bin/pytest -W ignore tests/test_gui_e2e.py
+      - name: Package builds and contains the Cursor templates
+        run: |
+          .venv/bin/pip wheel . --no-deps -w dist -q
+          python3 -m zipfile -l dist/*.whl | grep -q "chatbridge/data/cursor_templates.json"

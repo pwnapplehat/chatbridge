@@ -1,0 +1,14 @@
+[Unit]
+Description=ChatBridge auto-sync (keeps linked Cursor and Claude conversations up to date)
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=@CLI@ watch --interval 20
+Restart=on-failure
+RestartSec=15
+# Never touches anything but already-linked conversations; Cursor writes wait while Cursor is open.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
