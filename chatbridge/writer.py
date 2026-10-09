@@ -45,6 +45,7 @@ from .model import (
     as_obj,
     as_str,
 )
+from .osenv import append_text, display_path, replace_file, write_text
 from .validate import validate
 
 NAMESPACE = uuid.UUID("6f1b6a0e-2f0c-4a54-9a8e-3c2f4f6d8a11")
@@ -70,9 +71,10 @@ def cwd_slug(cwd: str) -> str:
 def resolve_cwd(candidate: str | None, aliases: dict[str, str] | None = None) -> str:
     """Pick the folder a restored session belongs to.
 
-    Order: the chat's own folder if it exists (also trying the /run/media <-> /mnt alias),
-    then an existing folder with the same final name (maps old Windows paths such as
-    'd:\\Work\\ExampleApp' to today's Linux folder), else $HOME.
+    Order: the chat's own folder if it exists (also trying the /run/media <-> /mnt alias on Linux),
+    then an existing folder with the same final name (maps a path from another machine or OS, such as a
+    Windows path like d:/Work/ExampleApp on Linux or /home/me/work/app on Windows, to today's folder),
+    else the home folder.
     """
     if candidate:
         options = [candidate]
@@ -82,10 +84,10 @@ def resolve_cwd(candidate: str | None, aliases: dict[str, str] | None = None) ->
             options.append("/run/media/" + os.environ.get("USER", "") + "/" + candidate[len("/mnt/") :])
         for option in options:
             if Path(option).is_dir():
-                return option
+                return display_path(option)
         base = re.split(r"[\\/]+", candidate.strip("/\\"))[-1].lower()
         if aliases and base in aliases:
-            return aliases[base]
+            return display_path(aliases[base])
     return str(Path.home())
 
 
@@ -174,12 +176,12 @@ def _write_log(entries: Iterable[JsonObj], final: Path) -> tuple[int, str]:
     partial = final.with_name(final.name + ".partial")
     last_assistant = ""
     try:
-        with partial.open("w", encoding="utf-8") as handle:
+        with partial.open("w", encoding="utf-8", newline="\n") as handle:
             for entry in entries:
                 if entry.get("type") == "assistant":
                     last_assistant = as_str(entry.get("uuid"))
                 handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        os.replace(partial, final)
+        replace_file(partial, final)
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
@@ -257,7 +259,7 @@ def import_chat(
     if not apply:
         return report
     if quarantined.exists():
-        os.replace(quarantined, log_path)  # re-verify a previously quarantined log instead of rewriting it
+        replace_file(quarantined, log_path)  # re-verify a previously quarantined log instead of rewriting it
         report.detail = "recovered previously quarantined log"
         size, last_assistant = log_path.stat().st_size, last_assistant_uuid(log_path)
     else:
@@ -274,11 +276,11 @@ def import_chat(
             if problems
             else f"verification mismatch: source={source.content_tuple()} written={report.written_counts.content_tuple()}"
         )
-        log_path.rename(log_path.with_name(log_path.name + ".unverified"))
+        replace_file(log_path, log_path.with_name(log_path.name + ".unverified"))
         return report
     if sessions_dir is not None:
         meta = _metadata(chat, session_id, cwd, report.title, source, last_assistant)
-        (sessions_dir / f"{as_str(meta['sessionId'])}.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
+        write_text(sessions_dir / f"{as_str(meta['sessionId'])}.json", json.dumps(meta, indent=2, ensure_ascii=False))
     else:
         report.detail = "no Claude desktop sessions folder found: wrote the session log only (open it with `claude --resume`)"
     report.status = "written"
@@ -333,10 +335,7 @@ def _commit_entries(
     """Append entries (+ a last-prompt trailer) with one write + fsync and refresh the desktop record."""
     trailer = {"type": "last-prompt", "lastPrompt": last_user[:200], "leafUuid": last_uuid, "sessionId": session_id}
     text = "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in [*entries, trailer])
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
+    append_text(log_path, text)
     if meta_path is not None and meta_path.is_file():
         meta = as_obj(json.loads(meta_path.read_text(encoding="utf-8")))
         last_assistant = next((as_str(e.get("uuid")) for e in reversed(entries) if e.get("type") == "assistant"), "")
@@ -345,8 +344,8 @@ def _commit_entries(
             meta["lastAssistantUuid"] = last_assistant
         meta["completedTurns"] = int(meta.get("completedTurns") or 0) + sum(1 for e in entries if e.get("type") == "assistant")  # type: ignore[call-overload]
         partial = meta_path.with_name(meta_path.name + ".partial")
-        partial.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-        os.replace(partial, meta_path)
+        write_text(partial, json.dumps(meta, indent=2, ensure_ascii=False))
+        replace_file(partial, meta_path)
 
 
 def compact_claude_log(

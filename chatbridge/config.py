@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cursor_source import CursorProfile
 from .model import ImporterError, as_int, as_list, as_obj, as_str
+from .osenv import app_dir_name, claude_desktop_sessions_dir, config_root, cursor_accounts_dir, data_root, replace_file, write_text
 
 
 class SettingsError(ImporterError):
@@ -41,18 +41,16 @@ class AppPaths:
 
     @staticmethod
     def default() -> "AppPaths":
-        """Standard Linux locations for Claude, Cursor and this app."""
+        """Standard locations for Claude, Cursor and this app on the current system (Linux, Windows, macOS)."""
         home = Path.home()
-        xdg_config = Path(os.environ.get("XDG_CONFIG_HOME", home / ".config"))
-        xdg_data = Path(os.environ.get("XDG_DATA_HOME", home / ".local" / "share"))
         return AppPaths(
             claude_dir=home / ".claude",
-            desktop_dir=xdg_config / "Claude" / "claude-code-sessions",
-            data_dir=xdg_data / "chatbridge",
-            config_dir=xdg_config / "chatbridge",
+            desktop_dir=claude_desktop_sessions_dir(),
+            data_dir=data_root() / app_dir_name(),
+            config_dir=config_root() / app_dir_name(),
             transcripts_dir=home / ".cursor" / "projects",
-            live_profile=CursorProfile(xdg_config / "Cursor" / "User", "live", writable=True),
-            account_profiles=discover_account_profiles(home / ".cursor-accounts"),
+            live_profile=CursorProfile(config_root() / "Cursor" / "User", "live", writable=True),
+            account_profiles=discover_account_profiles(cursor_accounts_dir()),
         )
 
     @property
@@ -97,7 +95,7 @@ def load_settings(paths: AppPaths) -> Settings:
     if not target.exists():
         return Settings()
     try:
-        raw = as_obj(json.loads(target.read_text(encoding="utf-8")))
+        raw = as_obj(json.loads(target.read_text(encoding="utf-8-sig")))
     except (OSError, json.JSONDecodeError) as exc:
         raise SettingsError(f"cannot read {target}: {exc}") from exc
     profiles = [
@@ -130,5 +128,5 @@ def save_settings(paths: AppPaths, settings: Settings) -> None:
         "carry_context": settings.carry_context,
     }
     partial = target.with_name(target.name + ".partial")
-    partial.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(partial, target)
+    write_text(partial, json.dumps(payload, indent=2))
+    replace_file(partial, target)

@@ -32,6 +32,7 @@ from .model import (
     as_obj,
     as_str,
 )
+from .osenv import write_text
 from .writer import (
     count_written,
     find_sessions_dir,
@@ -186,7 +187,7 @@ class ImportService:
             moved = self._move_session_files(chat_id, target)
             if moved:
                 (target).mkdir(parents=True, exist_ok=True)
-                (target / "manifest.json").write_text(json.dumps({"chat_id": chat_id, "moved_from": moved}, indent=2), encoding="utf-8")
+                write_text(target / "manifest.json", json.dumps({"chat_id": chat_id, "moved_from": moved}, indent=2))
                 results.append(UndoResult(chat_id, moved, str(target)))
         return results
 

@@ -63,6 +63,7 @@ from .model import (
     as_obj,
     as_str,
 )
+from .osenv import norm_path, replace_file, same_path
 from .service import ImportService, PreviewLine
 from .writer import (
     ClaudeBusyError,
@@ -234,13 +235,13 @@ class SyncService:
         return [p for p in self.profiles() if p.writable and p.db_path.is_file()]
 
     def profile_for(self, db_path: str) -> CursorProfile | None:
-        return next((p for p in self.profiles() if str(p.db_path) == db_path), None)
+        return next((p for p in self.profiles() if same_path(p.db_path, db_path)), None)
 
     def load_conversations(self) -> tuple[list[Conversation], list[str]]:
         """Scan both tools and pair what belongs together."""
         rows, warnings = self.service.load_catalog()
         sessions = list_claude_sessions(self.paths)
-        by_cursor = {(str(r.ref.source_path), r.ref.chat_id): r for r in rows}
+        by_cursor = {(norm_path(r.ref.source_path), r.ref.chat_id): r for r in rows}
         by_id: dict[str, ChatRow] = {}
         for row in rows:
             by_id.setdefault(row.ref.chat_id, row)
@@ -251,7 +252,7 @@ class SyncService:
 
         def add(cursor: ChatRow | None, claude: ClaudeSession | None, link: Link | None, origin: Origin) -> None:
             if cursor is not None:
-                used_cursor.add((str(cursor.ref.source_path), cursor.ref.chat_id))
+                used_cursor.add((norm_path(cursor.ref.source_path), cursor.ref.chat_id))
             if claude is not None:
                 used_claude.add(claude.key)
             title = claude.title if claude and origin == "claude" else cursor.title if cursor else claude.title if claude else ""
@@ -259,7 +260,7 @@ class SyncService:
             conversations.append(Conversation(key, title, cursor, claude, link, self._state(cursor, claude, link)))
 
         for link in self.links.all():
-            cursor = by_cursor.get((link.cursor_db, link.cursor_chat_id))
+            cursor = by_cursor.get((norm_path(link.cursor_db), link.cursor_chat_id))
             claude = claude_by_key.get(link.claude_key)
             if cursor and claude:  # a link whose other side was deleted is stale: the survivor is listed as an unpaired chat
                 add(cursor, claude, link, link.origin)
@@ -270,7 +271,7 @@ class SyncService:
             if cursor_id in by_id:
                 add(by_id[cursor_id], session, None, "claude")
         for row in rows:
-            if (str(row.ref.source_path), row.ref.chat_id) in used_cursor:
+            if (norm_path(row.ref.source_path), row.ref.chat_id) in used_cursor:
                 continue
             match = claude_by_key.get(local_session_name(row.ref.chat_id)) or next(
                 (s for s in sessions if s.cli_id == session_uuid(row.ref.chat_id)), None
@@ -278,7 +279,7 @@ class SyncService:
             if match is not None and match.key not in used_claude:
                 add(row, match, None, "cursor")
         for row in rows:
-            if (str(row.ref.source_path), row.ref.chat_id) not in used_cursor:
+            if (norm_path(row.ref.source_path), row.ref.chat_id) not in used_cursor:
                 add(row, None, None, "cursor")
         for session in sessions:
             if session.key not in used_claude:
@@ -623,9 +624,9 @@ class SyncService:
         removed = undo_journal(profile, journal)
         if data.get("created") is True:
             for link in self.links.all():
-                if link.cursor_db == db_path and link.cursor_chat_id == as_str(data.get("composer_id")):
+                if same_path(link.cursor_db, db_path) and link.cursor_chat_id == as_str(data.get("composer_id")):
                     self.links.remove(link.claude_key)
-        journal.rename(journal.with_suffix(".undone"))
+        replace_file(journal, journal.with_suffix(".undone"))
         return removed
 
     def unlink(self, conversation: Conversation) -> None:

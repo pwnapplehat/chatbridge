@@ -2,20 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
-
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Pango", "1.0")
 from gi.repository import Gtk, Pango  # noqa: E402
 
-from .models import STATE_CSS, STATE_LABELS, ConvItem  # noqa: E402
-
-
-def format_when(ms: int) -> str:
-    """Short local date/time for a list subtitle."""
-    return datetime.fromtimestamp(ms / 1000).strftime("%b %d, %H:%M") if ms else "unknown date"
+from ..gui_common import STATE_LABELS  # noqa: E402
+from ..gui_common import format_when as format_when  # noqa: E402
+from .models import STATE_CSS, ConvItem  # noqa: E402
 
 
 class ConversationRow(Gtk.Box):

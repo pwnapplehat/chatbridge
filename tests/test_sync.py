@@ -16,6 +16,7 @@ from chatbridge.cursor_source import iter_events
 from chatbridge.cursor_writer import CursorBusyError, CursorWriteError, undo_journal, upsert_events
 from chatbridge.events import event_key, meaningful, missing_events
 from chatbridge.model import AssistantText, Event, Reasoning, ToolCall, UserText
+from chatbridge.osenv import IS_LINUX, IS_WINDOWS, path_to_uri, same_path, vscode_fs_path
 from chatbridge.sync import Conversation, SyncService, SyncState, read_claude_events, read_cursor_events
 from chatbridge.writer import local_session_name
 from tests.fixtures import (
@@ -135,22 +136,31 @@ def test_new_cursor_chat_is_placed_in_the_matching_workspace(sync: SyncService, 
     assert workspace  # header row exists
 
 
-def test_unknown_existing_folder_gets_the_workspace_id_cursor_will_assign(sync: SyncService, world: World, tmp_path: Path) -> None:
-    """Cursor ids a folder workspace as md5(path + inode) on Linux; computing it files the chat where Cursor will look."""
+def expected_workspace_hash(folder: Path) -> str:
+    """VS Code's workspace id for a folder, written out independently of the implementation under test."""
     import hashlib
     import os
 
+    stat = os.stat(folder)
+    if IS_LINUX:
+        return hashlib.md5(f"{folder}{stat.st_ino}".encode()).hexdigest()
+    birth_ms = (getattr(stat, "st_birthtime_ns", None) or stat.st_ctime_ns) // 1_000_000
+    return hashlib.md5(f"{vscode_fs_path(str(folder)) if IS_WINDOWS else folder}{birth_ms}".encode()).hexdigest()
+
+
+def test_unknown_existing_folder_gets_the_workspace_id_cursor_will_assign(sync: SyncService, world: World, tmp_path: Path) -> None:
+    """Cursor ids a folder workspace as md5(path + inode) on Linux and md5(path + creation time) on Windows; computing it files the chat where Cursor will look."""
     folder = tmp_path / "never-opened-in-cursor"
     folder.mkdir()
     native_session(world, str(folder))
     sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
-    expected = hashlib.md5(f"{folder}{os.stat(folder).st_ino}".encode()).hexdigest()
+    expected = expected_workspace_hash(folder)
     conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
     rows = conn.execute("SELECT workspaceId, value FROM composerHeaders WHERE value LIKE '%Refactor lexer%'").fetchall()
     conn.close()
     assert [r[0] for r in rows] == [expected]
-    assert json.loads(rows[0][1])["workspaceIdentifier"]["uri"]["fsPath"] == str(folder)
-    assert find(sync, claude_key=CLAUDE_KEY).cursor.ref.cwd == str(folder)  # type: ignore[union-attr]
+    assert json.loads(rows[0][1])["workspaceIdentifier"]["uri"]["fsPath"] == vscode_fs_path(str(folder))
+    assert same_path(find(sync, claude_key=CLAUDE_KEY).cursor.ref.cwd or "", folder)  # type: ignore[union-attr]
 
 
 def test_vanished_folder_goes_to_no_folder_workspace(sync: SyncService, world: World, tmp_path: Path) -> None:
@@ -184,7 +194,7 @@ def test_misfiled_chat_is_moved_into_its_project_and_can_be_undone(sync: SyncSer
     conn.close()
     assert ws != "empty-window" and json.loads(value)["workspaceIdentifier"]["id"] == ws == data["workspaceIdentifier"]["id"]
     after = find(sync, claude_key=CLAUDE_KEY)
-    assert after.cursor.ref.cwd == str(folder) and not sync.sync(after, apply=True).fixes  # type: ignore[union-attr]
+    assert same_path(after.cursor.ref.cwd or "", folder) and not sync.sync(after, apply=True).fixes  # type: ignore[union-attr]
 
     sync.undo_cursor_write(Path(report.journal))
     conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
@@ -204,12 +214,9 @@ def test_refile_is_deferred_while_cursor_runs(sync: SyncService, world: World, t
 
 
 def test_workspace_hash_matches_vscode_formula(tmp_path: Path) -> None:
-    import hashlib
-    import os
-
     folder = tmp_path / "x"
     folder.mkdir()
-    assert cursor_writer.workspace_hash(str(folder)) == hashlib.md5(f"{folder}{os.stat(folder).st_ino}".encode()).hexdigest()
+    assert cursor_writer.workspace_hash(str(folder)) == expected_workspace_hash(folder)
     assert cursor_writer.workspace_hash(str(tmp_path / "missing")) is None
 
 
@@ -473,7 +480,7 @@ def read_recents(world: World) -> list[str] | None:
 
 
 def set_recents(world: World, folders: list[str]) -> str:
-    value = json.dumps({"entries": [{"folderUri": f"file://{f}"} for f in folders] + [{"fileUri": "file:///some/file.txt"}]})
+    value = json.dumps({"entries": [{"folderUri": path_to_uri(str(f))} for f in folders] + [{"fileUri": "file:///some/file.txt"}]})
     conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
     conn.execute("INSERT OR REPLACE INTO ItemTable (key, value) VALUES (?, ?)", (RECENTS_KEY, value))
     conn.commit()
@@ -496,7 +503,7 @@ def test_new_chat_appears_in_recent_projects_and_has_a_context_estimate(sync: Sy
     native_session(world)
     assert read_recents(world) is None
     report = sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
-    assert read_recents(world) == [f"file://{world.project_dir}"]
+    assert read_recents(world) == [path_to_uri(str(world.project_dir))]
     composer = composer_of(world, "Refactor lexer")
     expected = estimate_tokens(read_claude_events(find(sync, claude_key=CLAUDE_KEY).claude))  # type: ignore[arg-type]
     assert composer["contextTokensUsed"] == expected > 0
@@ -516,7 +523,7 @@ def test_recent_projects_keep_existing_entries_and_are_restored_exactly(sync: Sy
     before = set_recents(world, [str(other)])
     native_session(world)
     report = sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
-    assert read_recents(world) == [f"file://{world.project_dir}", f"file://{other}"], "new project goes first, others are kept"
+    assert read_recents(world) == [path_to_uri(str(world.project_dir)), path_to_uri(str(other))], "new project goes first, others are kept"
     conn = sqlite3.connect(world.live_user / "globalStorage" / "state.vscdb")
     assert '"fileUri"' in conn.execute("SELECT value FROM ItemTable WHERE key = ?", (RECENTS_KEY,)).fetchone()[0], "unrelated entries kept"
     conn.close()
@@ -530,7 +537,7 @@ def test_folder_already_in_recents_is_not_duplicated(sync: SyncService, world: W
     set_recents(world, [str(world.project_dir)])
     native_session(world)
     sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True)
-    assert read_recents(world) == [f"file://{world.project_dir}"]
+    assert read_recents(world) == [path_to_uri(str(world.project_dir))]
 
 
 def test_missing_folder_is_not_added_to_recents(sync: SyncService, world: World, tmp_path: Path) -> None:
@@ -560,7 +567,8 @@ def test_old_style_chat_is_repaired_context_and_recents_and_undone(sync: SyncSer
     assert read_recents(world) is None and composer_of(world, "Refactor lexer")["contextTokensUsed"] == 0, "a dry run must not write"
     report = sync.sync(conv, apply=True)
     assert report.status == "synced" and report.journal
-    assert read_recents(world) == [f"file://{world.project_dir}"] and int(composer_of(world, "Refactor lexer")["contextTokensUsed"]) > 0  # type: ignore[call-overload]
+    assert read_recents(world) == [path_to_uri(str(world.project_dir))]
+    assert int(composer_of(world, "Refactor lexer")["contextTokensUsed"]) > 0  # type: ignore[call-overload]
     assert sync.sync(find(sync, claude_key=CLAUDE_KEY), apply=True).status == "noop", "repair is idempotent"
 
     sync.undo_cursor_write(Path(report.journal))

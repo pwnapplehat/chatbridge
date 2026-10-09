@@ -3,7 +3,7 @@
 [![CI](https://github.com/pwnapplehat/chatbridge/actions/workflows/ci.yml/badge.svg)](https://github.com/pwnapplehat/chatbridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Two-way chat history sync between Cursor and Claude.** Continue a conversation in either tool and carry it over to the other, with every message, the model's reasoning and all tool calls (with their outputs). Linux (Ubuntu) today; Windows and macOS are planned.
+**Two-way chat history sync between Cursor and Claude.** Continue a conversation in either tool and carry it over to the other, with every message, the model's reasoning and all tool calls (with their outputs). Runs on **Linux (Ubuntu)** and **Windows 10 / 11**; macOS is planned.
 
 ![ChatBridge: unified Cursor and Claude conversation list with sync states](docs/images/main.png)
 
@@ -17,21 +17,46 @@ Cursor and Claude each keep their chat history in their own format. If you start
 - **Lossless**: your messages verbatim, assistant replies, reasoning, and tool calls with their outputs and errors.
 - **Knows what is already imported**: pairs are detected automatically (a link store plus deterministic ids), so nothing is imported twice.
 - **Time-ordered, append-only merge**: continue in Claude until 6 pm, then in Cursor, then sync; each tool receives the other's newer messages. If you continued in both, both are merged without losing or duplicating anything. Existing history is never rewritten or deleted.
-- **Auto-sync** (optional): keeps linked conversations up to date in the background, from the app or as a systemd user service.
+- **Auto-sync** (optional): keeps linked conversations up to date in the background, from the app, as a systemd user service (Linux) or as a hidden logon task (Windows).
 - **Safe by design**: dry run / Compare before every change, confirmation before writes, one-click Undo for everything written into Cursor, and Cursor is never written while it is running.
-- **Multiple Cursor accounts and backups**: every Cursor profile (including `~/.cursor-accounts/*` and old backups) is supported; backups are read-only sources.
-- **Professional GTK4 / libadwaita app** plus a scriptable CLI that uses the same engine.
+- **Multiple Cursor accounts and backups**: every Cursor profile (including `~/.cursor-accounts/*`, a Cursor started with `--user-data-dir`, and old backups) is supported; backups are read-only sources.
+- **Native app on each system**: GTK4 / libadwaita on Linux, a Tk app (no extra install) on Windows, plus a scriptable CLI. All three use the same engine.
 
 ![Activity page with the auto-sync log and the Cursor undo list](docs/images/activity.png)
 
+On Windows the same screens come as a native Tk app:
+
+![ChatBridge on Windows](docs/images/windows.png)
+
+## Install (Windows 10 / 11)
+
+**Easiest:** download `ChatBridge-<version>-x64-setup.exe` (Intel/AMD) or `-arm64-setup.exe` (ARM) from the [latest release](https://github.com/pwnapplehat/chatbridge/releases/latest) and run it (per-user, no administrator needed; optional PATH entry and auto-sync at sign-in). A `-portable.zip` is there too, and `SHA256SUMS.txt` to verify the files. The installers are not code-signed yet, so SmartScreen may ask you to confirm. Linux users find the `.deb` on the same page.
+
+From source (needs Python 3.11+):
+
+Needs Python 3.11 or newer from [python.org](https://www.python.org/downloads/windows/) (or `winget install Python.Python.3.12`); the default installer includes Tk.
+
+```powershell
+git clone https://github.com/pwnapplehat/chatbridge.git; cd chatbridge
+powershell -ExecutionPolicy Bypass -File install.ps1             # per-user, no administrator needed
+powershell -ExecutionPolicy Bypass -File install.ps1 -Service    # also start auto-sync (hidden) at every logon
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall  # removes only what the installer created
+```
+
+(`install.cmd` does the same when double-clicked.) You get a **ChatBridge** Start Menu entry and the `chatbridge` / `chatbridge-gui` commands in a new terminal. Without installing: `python -m venv .venv; .venv\Scripts\pip install -e .; .venv\Scripts\python -m chatbridge.tkgui`.
+
+ChatBridge finds Cursor in `%APPDATA%\Cursor` and Claude in `%USERPROFILE%\.claude` and `%APPDATA%\Claude`. If you start Cursor with `--user-data-dir` (several accounts), run `chatbridge doctor`: it tells you which running profile is not scanned yet and how to add it (`--profile` on the command line, or Menu -> *Cursor backup profiles...*). Settings live in `%APPDATA%\ChatBridge`, the link database and undo journals in `%LOCALAPPDATA%\ChatBridge`.
+
 ## Install (Ubuntu / Debian-based)
+
+Download `chatbridge_<version>_all.deb` from the [latest release](https://github.com/pwnapplehat/chatbridge/releases/latest) and run `sudo apt install ./chatbridge_<version>_all.deb`, or build it yourself:
 
 **Ubuntu 24.04+ / Debian 13+ (recommended): the `.deb`**
 
 ```bash
 git clone https://github.com/pwnapplehat/chatbridge.git && cd chatbridge
-packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.1.2_all.deb (no root needed)
-sudo apt install ./dist/chatbridge_1.1.2_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
+packaging/deb/build-deb.sh                      # -> dist/chatbridge_1.2.0_all.deb (no root needed)
+sudo apt install ./dist/chatbridge_1.2.0_all.deb    # apt pulls in GTK4/libadwaita/python3-gi
 systemctl --user enable --now chatbridge-sync   # optional: background auto-sync
 ```
 
@@ -41,12 +66,12 @@ Please follow the [manual test plan](docs/TESTING.md) for the parts only a real 
 
 Without installing: `python3 -m venv .venv --system-site-packages && .venv/bin/pip install -e . && .venv/bin/python -m chatbridge.gui`.
 
-Requirements: Python 3.11+ (developed and tested on 3.14; the code is syntax-checked for 3.11 and CI runs the distribution's Python), GTK 4 and libadwaita (GUI only; the CLI needs neither), Cursor and/or the Claude desktop app / Claude Code.
+Requirements: Python 3.11+ (developed on 3.14 and 3.12; CI runs the distribution's Python on Linux and 3.11 / 3.13 on Windows), GTK 4 and libadwaita on Linux or Tk on Windows (GUI only; the CLI needs neither), Cursor and/or the Claude desktop app / Claude Code.
 
 ## Quick start
 
 1. Run `chatbridge doctor` to see what ChatBridge found (Cursor profiles, Claude folders, whether Cursor is running).
-2. Open **ChatBridge**. The list shows every conversation from both tools with its state:
+2. Open **ChatBridge** (app menu on Linux, Start Menu on Windows). The list shows every conversation from both tools with its state:
 
 | State | Meaning | Action |
 |---|---|---|
@@ -63,6 +88,7 @@ Requirements: Python 3.11+ (developed and tested on 3.14; the code is syntax-che
 ### Command line
 
 ```bash
+# the same commands work in PowerShell / cmd on Windows
 chatbridge list                                  # unified list with states
 chatbridge sync --chat 22694eae                  # dry run for one Cursor chat (id prefix)
 chatbridge sync --chat 22694eae --apply          # import / sync it
@@ -108,12 +134,14 @@ Details and edge cases: [docs/SYNC.md](docs/SYNC.md). Storage formats: [docs/FOR
 
 ## Status and verification
 
-What is covered by automated tests (`./scripts/check.sh`: ruff, `mypy --strict`, unit, CLI end-to-end and GUI end-to-end tests under a virtual display, all on synthetic data):
+What is covered by automated tests (`./scripts/check.sh` on Linux, `scripts\check.ps1` on Windows: ruff, `mypy --strict`, unit, CLI end-to-end and GUI end-to-end tests, all on synthetic data):
 
 - both directions, follow-ups in each tool, both-changed merges, repeated identical messages, session re-keying by the Claude app, deferral while Cursor is running, Undo, transcript-only chats, Claude Code CLI-only setups;
 - a randomized round-trip property test (events survive Cursor and Claude unchanged).
 
 Verified against real data on the author's machine (Cursor 3.23.12, Claude desktop app 2.1.x): all 257 non-empty Cursor chats converted into Claude with zero mismatches, and four real chats (including one with about 192,000 records) round-tripped Cursor → Claude → Cursor with identical message sets. Imported sessions were opened and continued in the Claude desktop app.
+
+On Windows 11 (Cursor 3.24, Claude desktop app) the same engine was run against real data in a sandbox copy: a 66 MB chat of about 12.5 million tokens (10,547 tool calls) was imported into Claude with source and written counts identical and the log validated; a real Claude session was sent to a copy of a Cursor profile (filed under the workspace id Cursor itself computes, checked against all 21 workspaces of two real profiles) and then undone, leaving the profile unchanged.
 
 **Cursor-side writes** mirror records captured from a real Cursor 3.23.12 chat and are verified by structure and by round trip, but the first time you send a Claude conversation to Cursor, check that one chat opens as expected in your Cursor before syncing many. Cursor changes its internal format between versions; `scripts/gen_cursor_templates.py` regenerates the templates, and Undo reverts any write.
 
@@ -126,18 +154,26 @@ Claude's session log *is* the model's context, so a huge Cursor chat cannot be i
 - Cursor must be closed on the target profile for Claude → Cursor writes (they are deferred, not lost, while it is open).
 - Cursor transcript files (`~/.cursor/projects/*/agent-transcripts`) are read-only sources: they sync Cursor → Claude only and contain no tool outputs.
 - By default a chat sent to Cursor is a *view*: Cursor's model does not see it when you continue. The experimental **carry model context** option (see [docs/FORMATS.md](docs/FORMATS.md#cursor-agent-state-experimental)) rebuilds Cursor's internal agent state so the model knows the earlier conversation (most recent turns that fit, capped). Claude needs no such step: its log is its context.
-- Linux only for now.
+- Windows: Cursor must be closed on the target profile exactly as on Linux; if Cursor runs several times with different `--user-data-dir` folders, each profile is guarded separately. Very long project paths can exceed Windows' 260-character limit in Claude's project folder name (enable long paths in Windows or use a shorter project path).
+- macOS is not supported yet (its locations are handled in `osenv.py`, but it has never been run or tested there).
 
 ## Roadmap
 
-Windows and macOS support (path discovery and process detection are isolated in `config.py` and `cursor_writer.py`), signed packages, and import of more tools.
+macOS support (path discovery, process detection and workspace ids are isolated in `osenv.py`), signed packages (MSI / winget, Flatpak), and import of more tools.
 
 ## Development
 
 ```bash
 python3 -m venv .venv --system-site-packages && .venv/bin/pip install -e . mypy pytest ruff
-./scripts/check.sh                       # everything CI runs
+./scripts/check.sh                       # everything CI runs (Linux)
 python scripts/make_demo.py /tmp/demo    # synthetic Cursor + Claude data for trying the app safely
+```
+
+On Windows:
+
+```powershell
+python -m venv .venv; .venv\Scripts\pip install -e . mypy pytest ruff
+powershell -ExecutionPolicy Bypass -File scripts\check.ps1     # ruff, mypy --strict, unit, CLI and Tk GUI tests
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues as described in [SECURITY.md](SECURITY.md).

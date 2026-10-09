@@ -7,7 +7,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from chatbridge.writer import local_session_name, session_uuid
+from chatbridge import __version__
+from chatbridge.writer import cwd_slug, local_session_name, session_uuid
 from tests.fixtures import CHAT_BACKUP_ONLY, CHAT_MAIN, CHAT_TRANSCRIPT, World, age
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -84,7 +85,7 @@ def test_cwd_flag_overrides_project_folder(world: World, tmp_path: Path) -> None
     target.mkdir()
     result = cli(world, "import", "--chat", CHAT_BACKUP_ONLY[:8], "--cwd", str(target), "--apply")
     assert result.returncode == 0
-    assert (world.paths.claude_dir / "projects" / str(target).replace("/", "-").replace("_", "-")).is_dir()
+    assert (world.paths.claude_dir / "projects" / cwd_slug(str(target))).is_dir()
 
 
 def test_missing_claude_sessions_directory_is_a_clear_error(world: World) -> None:
@@ -149,5 +150,5 @@ def test_watch_once_syncs_changes_in_linked_conversations(world: World) -> None:
 def test_doctor_reports_environment(world: World) -> None:
     result = cli(world, "doctor")
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "ChatBridge 1.1.2" in result.stdout and "Cursor profile 'live' [read/write]" in result.stdout
+    assert f"ChatBridge {__version__}" in result.stdout and "Cursor profile 'live' [read/write]" in result.stdout
     assert "Claude desktop app sessions folder" in result.stdout and "Cursor is closed" in result.stdout

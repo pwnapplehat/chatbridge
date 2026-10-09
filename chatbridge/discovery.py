@@ -6,8 +6,9 @@ from pathlib import Path
 
 from .cursor_source import CursorProfile, folder_slug_index, list_db_chats, list_transcript_chats
 from .model import ChatRef, SourceError
+from .osenv import cursor_default_data_dir
 
-LIVE_PROFILE = CursorProfile(Path.home() / ".config" / "Cursor" / "User", "live")
+LIVE_PROFILE = CursorProfile(cursor_default_data_dir() / "User", "live")
 TRANSCRIPTS_DIR = Path.home() / ".cursor" / "projects"
 
 

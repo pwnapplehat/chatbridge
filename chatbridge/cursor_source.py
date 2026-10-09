@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import islice
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 from .events import MCP_CLAUDE_PREFIX
 from .model import (
@@ -35,6 +34,7 @@ from .model import (
     as_obj,
     as_str,
 )
+from .osenv import sqlite_uri, uri_to_path
 
 COMPOSER_PREFIX = "composerData:"
 BUBBLE_PREFIX = "bubbleId:"
@@ -69,11 +69,6 @@ def parse_json_text(raw: object) -> JsonObj | None:
     return None
 
 
-def uri_to_path(uri: str) -> str:
-    """Convert a file:// URI into a filesystem path."""
-    return unquote(urlparse(uri).path) if uri.startswith("file://") else uri
-
-
 @dataclass(frozen=True)
 class CursorProfile:
     """One Cursor user-data directory (the folder that contains globalStorage/ and workspaceStorage/)."""
@@ -105,7 +100,7 @@ def open_readonly(db_path: Path) -> sqlite3.Connection:
         raise SourceError(f"database not found: {db_path}")
     wal = db_path.with_name(db_path.name + "-wal")
     flags = "mode=ro" if wal.exists() else "mode=ro&immutable=1"
-    conn = sqlite3.connect(f"file:{db_path.as_posix().replace(' ', '%20')}?{flags}", uri=True)
+    conn = sqlite3.connect(sqlite_uri(db_path, flags), uri=True)
     conn.execute("PRAGMA query_only=1")
     return conn
 
@@ -281,7 +276,7 @@ def list_transcript_chats(projects_dir: Path, folder_by_slug: dict[str, str]) ->
                 chat_id=path.stem,
                 name="",
                 created_ms=mtime,
-                cwd=folder_by_slug.get(slug.strip("-")),
+                cwd=folder_by_slug.get(slug.strip("-").lower()),
                 preview=_transcript_preview(path),
                 is_subagent="subagents" in path.parts or path.stem.startswith("agent-"),
                 kind="transcript",
@@ -351,8 +346,8 @@ def iter_events(chat: ChatRef) -> Iterator[Event]:
 
 
 def folder_slug_index(folders: list[str]) -> dict[str, str]:
-    """Index project folders by Cursor's transcript-directory slug (non-alphanumerics -> '-')."""
-    return {re.sub(r"[^A-Za-z0-9]", "-", f).strip("-"): f for f in folders}
+    """Index project folders by Cursor's transcript-directory slug (non-alphanumerics -> '-', compared case-insensitively)."""
+    return {re.sub(r"[^A-Za-z0-9]", "-", f).strip("-").lower(): f for f in folders}
 
 
 def preview_events(chat: ChatRef, limit: int) -> list[Event]:

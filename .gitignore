@@ -9,3 +9,6 @@ _removed_imports/
 build/
 *.egg-info/
 dist/
+dist-win/
+build-win/
+dist-release/

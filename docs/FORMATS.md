@@ -4,14 +4,14 @@ These are the formats ChatBridge reads and writes. They are not documented by Cu
 
 ## Cursor
 
-Per profile (`~/.config/Cursor/User`, or `<--user-data-dir>/User`):
+Per profile (Linux `~/.config/Cursor/User`, Windows `%APPDATA%\Cursor\User`, or `<--user-data-dir>/User`):
 
 - `globalStorage/state.vscdb` (SQLite), table `cursorDiskKV(key TEXT UNIQUE, value BLOB)`:
   - `composerData:<chat>`: the chat record (name, timestamps, `fullConversationHeadersOnly`, model/context settings, …).
   - `bubbleId:<chat>:<bubble>`: one record per message: user text (`type 1`), assistant text, reasoning (`capabilityType 30`, `thinking.text`), tool call (`capabilityType 15`, `toolFormerData{name, params, rawArgs, result, status, error}`).
 - table `composerHeaders(composerId, workspaceId, createdAt, lastUpdatedAt, isArchived, isSubagent, recency, checkpointAt, subagentTypeName, value)`: the chat list; `workspaceId` is the hash of the folder it belongs to (`workspaceStorage/<hash>/workspace.json`).
-- A chat belongs to the workspace named by `composerHeaders.workspaceId`, which Cursor/VS Code derives on Linux as `md5(folder path + folder inode)` (verified against every workspace in a real profile). Chats with `workspaceId = empty-window` only show in windows with no folder open.
-- Recent projects: `ItemTable` key `history.recentlyOpenedPathsList` = `{"entries": [{"folderUri": "file://<path>"}, …]}` (most recent first). ChatBridge adds a project folder at the front only when it is absent.
+- A chat belongs to the workspace named by `composerHeaders.workspaceId`, which Cursor/VS Code derives on Linux as `md5(folder path + folder inode)` and on Windows as `md5(fsPath + creation time in ms)`, where `fsPath` has a lower-case drive letter and backslashes, e.g. `c:\Users\me\proj` (verified against every workspace in real profiles on both systems). Chats with `workspaceId = empty-window` only show in windows with no folder open.
+- Recent projects: `ItemTable` key `history.recentlyOpenedPathsList` = `{"entries": [{"folderUri": "file://<path>"}, …]}` (most recent first; on Windows `file:///c%3A/Users/me/proj`). A chat's `workspaceIdentifier.uri` carries `fsPath`, `external`, `path` (`/c:/Users/me/proj`) and `scheme`. ChatBridge adds a project folder at the front only when it is absent.
 - Context meter: `composerData.contextTokensUsed`, `contextTokenLimit`, `contextUsagePercent`, `promptTokenBreakdown` (and `contextUsagePercent` in the header). ChatBridge writes an estimate (about 4 characters per token); Cursor overwrites it with real figures after the next message.
 - Important: for large chats `fullConversationHeadersOnly` lists only a subset of the bubbles. The reader therefore reads **every** `bubbleId:<chat>:` row and orders by `createdAt`.
 - Key ranges (`key >= 'bubbleId:<chat>:' AND key < 'bubbleId:<chat>;'`) use the unique index; `LIKE` would scan the whole (often multi-GB) table.
@@ -30,7 +30,7 @@ ChatBridge writes field 1 (+ 5, 10, 26) for chats it creates, with the first two
 
 ## Claude
 
-- `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl`: the conversation log, one JSON object per line. Conversation entries have `type` `user`/`assistant`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `message`. Other line types (`queue-operation`, `attachment`, `system`, `custom-title`, `last-prompt`, …) are not conversation.
-- `~/.config/Claude/claude-code-sessions/<org>/<account>/local_<uuid>.json`: the desktop app's sidebar record (`sessionId`, `cliSessionId`, `cwd`, `title`, timestamps, …). The sidebar needs it; Claude Code CLI works with the log alone (`claude --resume`).
+- `~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl` (the slug replaces every non-alphanumeric character with `-`, so `C:\Users\me\proj` becomes `C--Users-me-proj`): the conversation log, one JSON object per line. Conversation entries have `type` `user`/`assistant`, `uuid`, `parentUuid`, `sessionId`, `timestamp`, `message`. Other line types (`queue-operation`, `attachment`, `system`, `custom-title`, `last-prompt`, …) are not conversation.
+- `claude-code-sessions/<org>/<account>/local_<uuid>.json` (Linux `~/.config/Claude/`, Windows `%APPDATA%\Claude\`, or the Microsoft Store package's `LocalCache\Roaming\Claude`): the desktop app's sidebar record (`sessionId`, `cliSessionId`, `cwd`, `title`, timestamps, …). The sidebar needs it; Claude Code CLI works with the log alone (`claude --resume`).
 - Compaction (how Claude keeps a long session usable): a `{"type":"system","subtype":"compact_boundary","content":"Conversation compacted","parentUuid":null,"logicalParentUuid":<last uuid before>,"compactMetadata":{"trigger","preTokens","messagesSummarized","postTokens"}}` entry starts a new chain; the next entry is a user message with `isCompactSummary: true` and `isVisibleInTranscriptOnly: true` whose text starts "This session is being continued from a previous conversation that ran out of context…". The model context is that summary plus what follows. ChatBridge writes the same shape for big imports and flags its re-emitted recent turns (and the boundary and summary) with `"chatbridgeRecap": true` so they are never read back as new messages.
 - Noise skipped when reading: sidechain (subagent) entries, `isMeta`, compaction summaries, API-error stubs, `<system-reminder>` blocks, slash-command wrappers.

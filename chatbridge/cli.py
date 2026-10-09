@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 from dataclasses import replace
@@ -21,17 +22,29 @@ from .sync import Conversation, SyncReport, SyncService
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="chatbridge", description="Import Cursor chats into Claude (native sessions).")
+    parser = argparse.ArgumentParser(prog="chatbridge", description="Two-way chat history sync between Cursor and Claude.")
     parser.add_argument("command", choices=["inventory", "list", "import", "verify", "undo", "sync", "watch", "cursor-undo", "doctor"])
     parser.add_argument("--profile", action="append", default=[], help="extra Cursor user dir, '<label>=<path-to-User>' (repeatable)")
-    parser.add_argument("--no-live", action="store_true", help="do not read the live ~/.config/Cursor profile")
-    parser.add_argument("--cursor-user-dir", type=Path, default=None, help="live Cursor user-data folder (default ~/.config/Cursor/User)")
-    parser.add_argument("--config-dir", type=Path, default=None, help="where settings.json lives (default ~/.config/chatbridge)")
+    parser.add_argument("--no-live", action="store_true", help="do not read the live Cursor profile")
+    parser.add_argument(
+        "--cursor-user-dir",
+        type=Path,
+        default=None,
+        help="live Cursor user-data folder (default: Cursor's own, e.g. ~/.config/Cursor/User or the Cursor folder in %%APPDATA%%)",
+    )
+    parser.add_argument(
+        "--config-dir", type=Path, default=None, help="where settings.json lives (default: ~/.config/chatbridge or %%APPDATA%%/ChatBridge)"
+    )
     parser.add_argument("--transcripts", type=Path, default=None, help="agent-transcripts root (default ~/.cursor/projects)")
     parser.add_argument("--no-transcripts", action="store_true")
     parser.add_argument("--claude-dir", type=Path, default=None)
     parser.add_argument("--desktop-dir", type=Path, default=None)
-    parser.add_argument("--data-dir", type=Path, default=None, help="where undone imports are moved (default ~/.local/share/chatbridge)")
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="where links, undo journals and undone imports live (default: ~/.local/share/chatbridge or %%LOCALAPPDATA%%/ChatBridge)",
+    )
     parser.add_argument("--chat", action="append", default=[], help="chat id or unique id prefix (repeatable)")
     parser.add_argument("--all", action="store_true", help="select every non-empty chat (must be explicit)")
     parser.add_argument("--subagents", action="store_true", help="include subagent chats")
@@ -49,6 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interval", type=float, default=20.0, help="watch: seconds between checks")
     parser.add_argument("--once", action="store_true", help="watch: run a single pass and exit")
     parser.add_argument("--journal", type=Path, default=None, help="cursor-undo: journal file written by a Cursor write")
+    parser.add_argument("--log-file", type=Path, default=None, help="watch: append all output to this file (for background / hidden runs)")
     return parser
 
 
@@ -221,9 +235,24 @@ def run(args: argparse.Namespace, service: ImportService) -> int:
     return 1 if any(r.status == "failed" for r in reports) else 0
 
 
+def _prepare_output(log_file: Path | None) -> None:
+    """Make printing safe everywhere: never crash on characters the console cannot show, work without a console at all."""
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handle = log_file.open("a", encoding="utf-8", errors="replace", buffering=1)
+        sys.stdout = sys.stderr = handle
+    for name in ("stdout", "stderr"):
+        stream = getattr(sys, name)
+        if stream is None:  # pythonw.exe / a service: there is no console
+            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))  # noqa: SIM115
+        elif hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
+
+
 def main(argv: list[str]) -> int:
-    logging.basicConfig(level=logging.WARNING)
     args = build_parser().parse_args(argv)
+    _prepare_output(args.log_file)
+    logging.basicConfig(level=logging.WARNING)
     try:
         paths = make_paths(args)
         settings: Settings = load_settings(paths)

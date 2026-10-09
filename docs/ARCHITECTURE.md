@@ -16,11 +16,15 @@ chatbridge/
   conversations.py  list filtering (pure)
   service.py        legacy one-way import facade used by the importer CLI commands
   cli.py            command line
+  osenv.py          every platform difference: locations, file URIs, workspace ids, running-Cursor detection, atomic writes
+  launcher.py       chatbridge-gui: GTK app on Linux, Tk app elsewhere
+  gui_common.py     wording and helpers shared by both front ends
   doctor.py         environment diagnostics
   gui/              GTK4 / libadwaita front end (thin: all logic is in the layers above)
+  tkgui/            Tk front end for Windows (same screens and actions as gui/)
 ```
 
-Layering rule: nothing below `gui/` imports GTK, so every behaviour is testable without a display. The GUI tests drive the real window under Xvfb.
+Layering rule: nothing below `gui/` and `tkgui/` imports a GUI toolkit, so every behaviour is testable without a display. The GUI tests drive the real windows (GTK under Xvfb on Linux, Tk on Windows). Anything that differs per operating system lives in `osenv.py`; the rest of the code never checks `sys.platform`.
 
 Data flow of a sync: `SyncService.load_conversations` pairs both catalogs → `plan` reads both sides to events and diffs them → `sync` applies: Claude by appending converted entries (`writer.append_events_to_claude`), Cursor by `cursor_writer.upsert_events` (one transaction plus journal) → fingerprints are recorded in `links.db`.
 

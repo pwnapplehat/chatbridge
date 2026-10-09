@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import base64
 import contextlib
-import hashlib
 import json
 import os
 import re
@@ -24,12 +23,12 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 
 from .agent_state import BLOB_KEY, build_state, decode_state, find_prefix
-from .cursor_source import CursorProfile, uri_to_path
+from .cursor_source import CursorProfile
 from .events import MCP_CLAUDE_PREFIX
 from .model import (
     AssistantText,
@@ -44,6 +43,8 @@ from .model import (
     as_obj,
     as_str,
 )
+from .osenv import norm_path, path_to_uri, replace_file, resolved, running_cursor_data_dirs, sqlite_uri, uri_dict, uri_to_path, utc_moment
+from .osenv import workspace_hash as _workspace_hash
 from .writer import NAMESPACE
 
 COMPOSER_KEY = "composerData:"
@@ -81,24 +82,13 @@ def cursor_chat_id_for_claude(claude_key: str) -> str:
 # --------------------------------------------------------------------------- running detection
 def _main_process_profiles() -> list[Path]:
     """User-data dirs of all running Cursor main processes (default profile when no --user-data-dir)."""
-    found: list[Path] = []
-    for proc in Path("/proc").glob("[0-9]*"):
-        try:
-            args = (proc / "cmdline").read_bytes().split(b"\0")
-        except OSError:
-            continue
-        text = [a.decode("utf-8", "replace") for a in args if a]
-        if not text or "--type=" in " ".join(text) or ("/cursor/cursor" not in text[0] and Path(text[0]).name != "cursor"):
-            continue
-        explicit = next((a.split("=", 1)[1] for a in text if a.startswith("--user-data-dir=")), None)
-        found.append(Path(explicit) if explicit else Path.home() / ".config" / "Cursor")
-    return found
+    return running_cursor_data_dirs()
 
 
 def cursor_running(profile: CursorProfile) -> bool:
     """True when a Cursor main process uses this profile's data directory."""
-    root = profile.user_dir.parent.resolve()
-    return any(p.resolve() == root for p in _main_process_profiles())
+    root = resolved(profile.user_dir.parent)
+    return any(resolved(p) == root for p in _main_process_profiles())
 
 
 # --------------------------------------------------------------------------- templates
@@ -108,7 +98,7 @@ def _templates() -> dict[str, JsonObj]:
 
 
 def _iso(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
+    return utc_moment(ms).strftime("%Y-%m-%dT%H:%M:%S.") + f"{ms % 1000:03d}Z"
 
 
 def _lexical(text: str) -> str:
@@ -194,12 +184,8 @@ def build_bubble(event: Event, bubble_id: str, ts_ms: int, tpl: dict[str, JsonOb
 
 # --------------------------------------------------------------------------- workspace + composer records
 def workspace_hash(folder: str) -> str | None:
-    """The workspace id Cursor/VS Code assigns to a folder on Linux: md5(path + inode). None if the folder is gone."""
-    try:
-        inode = os.stat(folder).st_ino
-    except OSError:
-        return None
-    return hashlib.md5(f"{folder}{inode}".encode()).hexdigest()
+    """The workspace id Cursor/VS Code assigns to a folder (see osenv.workspace_hash). None if the folder is gone."""
+    return _workspace_hash(folder)
 
 
 def workspace_for_folder(profile: CursorProfile, folder: str | None) -> tuple[str, JsonObj]:
@@ -209,9 +195,9 @@ def workspace_for_folder(profile: CursorProfile, folder: str | None) -> tuple[st
     first opened (so the chat appears as soon as the folder is opened); else the 'empty-window' (no folder) workspace.
     """
     if folder:
-        wanted = {folder, folder.replace("/run/media/" + os.environ.get("USER", ""), "/mnt", 1)}
+        wanted = {norm_path(folder), norm_path(folder.replace("/run/media/" + os.environ.get("USER", ""), "/mnt", 1))}
         for ws_hash, known in profile.workspace_folders().items():
-            if known in wanted or uri_to_path(known) in wanted:
+            if norm_path(known) in wanted or norm_path(uri_to_path(known)) in wanted:
                 return ws_hash, _folder_identifier(ws_hash, known)
         computed = workspace_hash(folder)
         if computed is not None:
@@ -220,8 +206,7 @@ def workspace_for_folder(profile: CursorProfile, folder: str | None) -> tuple[st
 
 
 def _folder_identifier(ws_hash: str, folder: str) -> JsonObj:
-    uri = {"$mid": 1, "fsPath": folder, "external": f"file://{folder}", "path": folder, "scheme": "file"}
-    return {"id": ws_hash, "uri": uri}
+    return {"id": ws_hash, "uri": uri_dict(folder)}
 
 
 def _random_key() -> str:
@@ -477,7 +462,7 @@ def _store_agent_state(
 def chat_state_is_empty(profile: CursorProfile, composer_id: str) -> bool | None:
     """Whether the chat has no model-facing conversation state yet (None if the chat is missing)."""
     try:
-        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_uri(profile.db_path), uri=True)
     except sqlite3.Error:
         return None
     try:
@@ -492,7 +477,7 @@ def chat_state_is_empty(profile: CursorProfile, composer_id: str) -> bool | None
 def prefix_available(profile: CursorProfile) -> bool:
     """Whether the profile has a native chat whose system prompt can be borrowed."""
     try:
-        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_uri(profile.db_path), uri=True)
     except sqlite3.Error:
         return False
     try:
@@ -532,8 +517,8 @@ def _recents_with_folder(conn: sqlite3.Connection, folder: str) -> tuple[str | N
     previous = row[0] if row else None
     parsed = as_obj(json.loads(previous)) if isinstance(previous, str) and previous else {}
     entries = as_list(parsed.get("entries"))
-    uri = f"file://{folder}"
-    if any(as_str(as_obj(entry).get("folderUri")) == uri for entry in entries):
+    uri = path_to_uri(folder)
+    if any(norm_path(uri_to_path(as_str(as_obj(entry).get("folderUri")))) == norm_path(folder) for entry in entries):
         return previous if isinstance(previous, str) else None, None
     parsed["entries"] = [{"folderUri": uri}, *entries]
     return previous if isinstance(previous, str) else None, json.dumps(parsed, ensure_ascii=False)
@@ -553,7 +538,7 @@ def _put_recents(conn: sqlite3.Connection, folder: str | None) -> tuple[bool, st
 def folder_in_recents(profile: CursorProfile, folder: str) -> bool:
     """Whether the folder is already in the profile's recent projects (read-only check)."""
     try:
-        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_uri(profile.db_path), uri=True)
     except sqlite3.Error:
         return True
     try:
@@ -567,7 +552,7 @@ def folder_in_recents(profile: CursorProfile, folder: str) -> bool:
 def chat_context_tokens(profile: CursorProfile, composer_id: str) -> int | None:
     """Stored context-token figure of a chat (None if the chat is missing)."""
     try:
-        conn = sqlite3.connect(f"file:{profile.db_path}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_uri(profile.db_path), uri=True)
     except sqlite3.Error:
         return None
     try:
@@ -615,11 +600,11 @@ def _write_journal(
         "recents": {"changed": recents[0], "previous": recents[1]},
     }  # fmt: skip
     partial = path.with_name(path.name + ".partial")
-    with partial.open("w", encoding="utf-8") as handle:
+    with partial.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False))
         handle.flush()
         os.fsync(handle.fileno())
-    os.replace(partial, path)
+    replace_file(partial, path)
     return path
 
 

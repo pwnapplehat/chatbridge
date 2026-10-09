@@ -64,3 +64,36 @@ jobs:
         with:
           name: chatbridge-deb
           path: dist/*.deb
+
+  windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install with dev tools
+        run: python -m pip install -e . mypy pytest ruff
+      - name: Lint
+        run: |
+          python -m ruff check chatbridge tests scripts
+          python -m ruff format --check chatbridge tests scripts
+      - name: Types (mypy --strict)
+        run: python -m mypy
+      - name: Unit, CLI and Tk GUI end-to-end tests
+        run: python -m pytest -W ignore
+      - name: Install with install.ps1, smoke test, uninstall
+        shell: powershell
+        run: |
+          $t = Join-Path $env:RUNNER_TEMP 'cb'
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Prefix "$t\app" -StartMenuDir "$t\sm" -NoPath
+          & "$t\app\bin\chatbridge.cmd" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'chatbridge --help failed' }
+          & "$t\app\bin\chatbridge.cmd" doctor
+          if (-not (Test-Path "$t\sm\ChatBridge.lnk")) { throw 'no Start Menu shortcut' }
+          powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1 -Prefix "$t\app" -StartMenuDir "$t\sm" -NoPath -Uninstall
+          if (Test-Path "$t\app") { throw 'uninstall left files behind' }

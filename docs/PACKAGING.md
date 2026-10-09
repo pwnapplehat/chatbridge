@@ -1,5 +1,29 @@
 # Packaging and supported systems
 
+## Windows 10 / 11
+
+### Release builds
+
+Pushing a tag `vX.Y.Z` (equal to `chatbridge.__version__`, with a `## X.Y.Z` section in `CHANGELOG.md`) runs `.github/workflows/release.yml`: it tests and builds on Ubuntu, Windows x64 and Windows ARM64, smoke-tests every package (the `.deb` is installed and removed; each Windows installer is installed silently, run, and uninstalled), and publishes one GitHub Release with `chatbridge_X.Y.Z_all.deb`, the source `.tar.gz`, `ChatBridge-X.Y.Z-{x64,arm64}-setup.exe`, `ChatBridge-X.Y.Z-{x64,arm64}-portable.zip` and `SHA256SUMS.txt`. Pushing the branch `release-check` does the same without publishing. The Windows programs are frozen with PyInstaller (`packaging/windows/chatbridge.spec`) and wrapped with Inno Setup (`packaging/windows/chatbridge.iss`); they are not code-signed.
+
+### From source
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1             # per-user install (no administrator)
+powershell -ExecutionPolicy Bypass -File install.ps1 -Service    # + hidden auto-sync at logon
+powershell -ExecutionPolicy Bypass -File install.ps1 -Uninstall
+```
+
+The installer finds the newest Python 3.11+ that has Tk (`py -3.x`, then `python`; pass `-Python C:\path\python.exe` to choose), creates a virtual environment under `%LOCALAPPDATA%\Programs\ChatBridge`, installs the package into it (the only dependency is `psutil`, used to detect a running Cursor) and adds:
+
+- `bin\chatbridge.cmd` and `bin\chatbridge-gui.cmd`, with that folder added to your user `PATH` (`-NoPath` skips it);
+- a **ChatBridge** Start Menu shortcut (`-NoShortcuts` skips it);
+- with `-Service`, a scheduled task *ChatBridge Auto-Sync* that runs `pythonw -m chatbridge watch --interval 20 --log-file %LOCALAPPDATA%\ChatBridge\watch.log` hidden at every logon (one instance only, restarted on failure). If Task Scheduler refuses, a Startup-folder shortcut is used instead.
+
+`-Prefix`, `-StartMenuDir` and `-TaskName` relocate everything (the CI smoke test uses them). Uninstall removes only those items; your chats, Claude data, settings, link database and undo journals are never touched. `pip install .` also works and provides the same `chatbridge` and `chatbridge-gui` commands (the GUI command is a windowed launcher, so no console opens). CI installs and uninstalls with the script on a clean Windows runner.
+
+Supported: Windows 10 and 11 with Python 3.11 or newer from python.org (Tk is included). Not provided yet: an MSI / winget package or a signed executable.
+
 ## Ubuntu / Debian: `.deb`
 
 ```bash

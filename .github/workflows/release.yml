@@ -1,0 +1,195 @@
+name: Release
+
+# Push a tag vX.Y.Z (equal to chatbridge/__init__.py __version__) to build every package and publish a GitHub Release.
+# Pushing the branch "release-check" builds and tests everything but publishes nothing (a dry run).
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release-check"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          version="$(python3 -c "import re; print(re.search(r'__version__ = \"([^\"]+)\"', open('chatbridge/__init__.py').read()).group(1))")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v$version" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match chatbridge.__version__ v$version"; exit 1
+          fi
+          grep -q "^## $version\$" CHANGELOG.md || { echo "::error::CHANGELOG.md has no '## $version' section"; exit 1; }
+
+  linux:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y python3-gi gir1.2-gtk-4.0 gir1.2-adw-1 python3-venv xvfb desktop-file-utils appstream
+      - name: Tests
+        run: |
+          python3 -m venv .venv --system-site-packages
+          .venv/bin/pip install -e . mypy pytest ruff
+          .venv/bin/ruff check chatbridge tests scripts
+          .venv/bin/mypy
+          xvfb-run -a .venv/bin/pytest -W ignore
+      - name: Build the .deb and the tarball
+        run: |
+          packaging/deb/build-deb.sh dist
+          packaging/build-tarball.sh
+          ls -l dist
+      - name: Validate and smoke-test the .deb
+        run: |
+          dpkg-deb --info dist/*.deb
+          dpkg -x dist/*.deb /tmp/payload
+          desktop-file-validate /tmp/payload/usr/share/applications/*.desktop
+          appstreamcli validate --no-net /tmp/payload/usr/share/metainfo/*.xml
+          sudo apt-get install -y ./dist/chatbridge_*_all.deb
+          chatbridge --help >/dev/null
+          chatbridge doctor
+          xvfb-run -a timeout 12 chatbridge-gui >/tmp/gui.log 2>&1 || test $? -eq 124
+          ! grep -i -E "traceback|critical" /tmp/gui.log
+          sudo apt-get remove -y chatbridge
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: |
+            dist/*.deb
+            dist/*.tar.gz
+
+  windows:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            python-arch: x64
+          - arch: arm64
+            runner: windows-11-arm
+            python-arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.python-arch }}
+      - name: Install with dev tools
+        run: python -m pip install -e . pyinstaller mypy pytest ruff
+      - name: Lint, types and tests
+        run: |
+          python -m ruff check chatbridge tests scripts
+          python -m mypy
+          python -m pytest -W ignore
+      - name: Build the programs (PyInstaller)
+        run: python -m PyInstaller --noconfirm --workpath build-win --distpath dist-win packaging/windows/chatbridge.spec
+      - name: Smoke-test the built programs
+        shell: pwsh
+        run: |
+          $dir = "dist-win/ChatBridge"
+          foreach ($exe in 'chatbridge.exe', 'chatbridge-gui.exe', 'chatbridge-sync.exe') {
+            if (-not (Test-Path "$dir/$exe")) { throw "missing $exe" }
+          }
+          & "$dir/chatbridge.exe" --help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw 'chatbridge --help failed' }
+          & "$dir/chatbridge.exe" doctor
+          # The windowed app must start and stay up for a few seconds without crashing.
+          $gui = Start-Process "$dir/chatbridge-gui.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($gui.HasExited) { throw "chatbridge-gui.exe exited early with code $($gui.ExitCode)" }
+          Stop-Process -Id $gui.Id -Force
+          $global:LASTEXITCODE = 0  # doctor exits 1 on a runner without Cursor; that is expected here
+      - name: Portable zip
+        shell: pwsh
+        run: |
+          $v = "${{ needs.version.outputs.version }}"
+          New-Item -ItemType Directory -Force dist-release | Out-Null
+          Copy-Item README.md, LICENSE dist-win/ChatBridge/
+          Compress-Archive -Path dist-win/ChatBridge -DestinationPath "dist-release/ChatBridge-$v-${{ matrix.arch }}-portable.zip"
+      - name: Find or install Inno Setup
+        shell: pwsh
+        run: |
+          $candidates = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe")
+          $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/is-6_5_4/innosetup-6.5.4.exe" -OutFile "$env:RUNNER_TEMP\is.exe"
+            Start-Process "$env:RUNNER_TEMP\is.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/CURRENTUSER', '/NORESTART', '/SP-' -Wait
+            $iscc = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+          if (-not $iscc) { throw 'Inno Setup could not be found or installed' }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          & $env:ISCC "/DAppVersion=${{ needs.version.outputs.version }}" "/DArch=${{ matrix.arch }}" packaging/windows/chatbridge.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+          Get-ChildItem dist-release
+      - name: Install silently, run, uninstall
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem dist-release -Filter '*-setup.exe' | Select-Object -First 1
+          $target = Join-Path $env:RUNNER_TEMP 'cb-install'
+          Start-Process $setup.FullName -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', "/DIR=$target", '/TASKS=addpath', "/LOG=$env:RUNNER_TEMP\setup.log" -Wait
+          if (-not (Test-Path "$target\chatbridge.exe")) { Get-Content "$env:RUNNER_TEMP\setup.log" -Tail 40; throw 'installer did not install' }
+          & "$target\chatbridge.exe" doctor
+          if ($LASTEXITCODE -gt 1) { throw 'installed chatbridge.exe failed' }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if (-not ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -eq $target })) { throw 'PATH entry missing' }
+          Start-Process "$target\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          Start-Sleep -Seconds 2
+          if (Test-Path "$target\chatbridge.exe") { throw 'uninstall left the program behind' }
+          $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+          if ($userPath -split ';' | Where-Object { $_.TrimEnd('\') -eq $target }) { throw 'uninstall left the PATH entry' }
+          $global:LASTEXITCODE = 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.arch }}
+          path: |
+            dist-release/*-setup.exe
+            dist-release/*-portable.zip
+
+  publish:
+    needs: [version, linux, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Checksums and release notes
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          cd ..
+          version="${{ needs.version.outputs.version }}"
+          awk -v v="## $version" '$0==v{on=1;next} /^## /{on=0} on' CHANGELOG.md > notes.md
+          {
+            echo
+            echo "### Downloads"
+            echo "- **Windows 10/11:** \`ChatBridge-$version-x64-setup.exe\` (Intel/AMD) or \`ChatBridge-$version-arm64-setup.exe\` (ARM), or the \`-portable.zip\` of either. No administrator rights needed."
+            echo "- **Ubuntu / Debian:** \`chatbridge_${version}_all.deb\` (\`sudo apt install ./chatbridge_${version}_all.deb\`), or the \`.tar.gz\` with \`install.sh\` for other distributions."
+            echo "- Verify with \`SHA256SUMS.txt\`. The Windows files are not code-signed, so SmartScreen may ask you to confirm (More info, then Run anyway)."
+          } >> notes.md
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* --title "ChatBridge ${{ needs.version.outputs.version }}" --notes-file notes.md --verify-tag

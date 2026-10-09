@@ -12,9 +12,9 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
-import gi
 import pytest
 
+gi = pytest.importorskip("gi", reason="GTK front end tests need PyGObject (Linux)")
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib  # noqa: E402

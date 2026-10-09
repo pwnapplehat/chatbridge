@@ -11,6 +11,7 @@ from .claude_source import list_claude_sessions
 from .config import AppPaths, Settings
 from .cursor_source import CursorProfile
 from .cursor_writer import cursor_running
+from .osenv import IS_LINUX, IS_WINDOWS, resolved, running_cursor_data_dirs, sqlite_uri
 
 
 @dataclass(frozen=True)
@@ -26,7 +27,7 @@ def _profile_check(profile: CursorProfile) -> Check:
     if not db.is_file():
         return Check("warn", f"Cursor profile '{profile.label}': no database at {db}")
     try:
-        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        conn = sqlite3.connect(sqlite_uri(db), uri=True)
         (chats,) = conn.execute("SELECT count(*) FROM cursorDiskKV WHERE key LIKE 'composerData:%'").fetchone()
         conn.close()
     except sqlite3.Error as exc:
@@ -67,6 +68,28 @@ def run_doctor(paths: AppPaths, settings: Settings) -> list[Check]:
             f"Undo journals: {paths.journal_dir} ({len(list(paths.journal_dir.glob('*.json'))) if paths.journal_dir.is_dir() else 0} entries)",
         )
     )
+    known = {resolved(prof.user_dir.parent) for prof in profiles}
+    for running in running_cursor_data_dirs():
+        if resolved(running) not in known:
+            checks.append(
+                Check(
+                    "warn",
+                    f"Cursor is running with data folder {running}, which ChatBridge does not scan. "
+                    f'Add it with: chatbridge doctor --profile "{running.name}={running / "User"}"',
+                )
+            )
+    checks.append(_gui_check())
+    return checks
+
+
+def _gui_check() -> Check:
+    if IS_WINDOWS or not IS_LINUX:
+        try:
+            import tkinter
+
+            return Check("ok", f"GUI toolkit: Tk {tkinter.TkVersion} (built into Python)")
+        except ImportError:
+            return Check("warn", "GUI toolkit missing (CLI still works): reinstall Python with the 'tcl/tk and IDLE' option")
     try:
         import gi
 
@@ -74,14 +97,9 @@ def run_doctor(paths: AppPaths, settings: Settings) -> list[Check]:
         gi.require_version("Adw", "1")
         from gi.repository import Adw, Gtk
 
-        checks.append(
-            Check(
-                "ok",
-                f"GUI toolkit: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}, libadwaita {Adw.get_major_version()}.{Adw.get_minor_version()}",
-            )
+        return Check(
+            "ok",
+            f"GUI toolkit: GTK {Gtk.get_major_version()}.{Gtk.get_minor_version()}, libadwaita {Adw.get_major_version()}.{Adw.get_minor_version()}",
         )
     except (ImportError, ValueError):
-        checks.append(
-            Check("warn", "GUI toolkit missing (CLI still works). On Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1")
-        )
-    return checks
+        return Check("warn", "GUI toolkit missing (CLI still works). On Ubuntu: sudo apt install python3-gi gir1.2-gtk-4.0 gir1.2-adw-1")

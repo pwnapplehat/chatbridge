@@ -12,10 +12,10 @@ import re
 import uuid
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 
 from .compaction import CompactionPlan, capped_output, wrap_summary
 from .model import AssistantText, Counts, EmptyRecord, Event, JsonObj, Reasoning, ToolCall, UserText
+from .osenv import utc_moment
 
 CLAUDE_VERSION = "2.1.284"
 SYNTHETIC_MODEL = "<synthetic>"
@@ -29,7 +29,7 @@ TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 
 def iso_ms(epoch_ms: int) -> str:
     """Format epoch milliseconds as Claude's ISO-8601 UTC timestamp."""
-    moment = datetime.fromtimestamp(epoch_ms / 1000, tz=UTC)
+    moment = utc_moment(epoch_ms)
     return moment.strftime("%Y-%m-%dT%H:%M:%S.") + f"{epoch_ms % 1000:03d}Z"
 
 

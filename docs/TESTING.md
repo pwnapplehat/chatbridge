@@ -9,10 +9,24 @@ Safety notes before you start:
 - Optional but wise before step 5 (Cursor closed): `cp <profile>/User/globalStorage/state.vscdb <profile>/User/globalStorage/state.vscdb.bak`.
 - Run the GUI from a terminal (`chatbridge-gui`) so its log output is visible if something goes wrong.
 
+## Windows
+
+The same plan applies on Windows; replace the commands as follows.
+
+- Install: `powershell -ExecutionPolicy Bypass -File install.ps1` (add `-Service` for step 9), then `chatbridge doctor` in a **new** terminal. Start the app from the Start Menu or with `chatbridge-gui`; for log output run `python -m chatbridge.tkgui` in a terminal.
+- "Close Cursor completely" means every Cursor window of the profile (look for `Cursor.exe` in Task Manager if unsure; `chatbridge doctor` says whether the profile is running).
+- For the first Claude -> Cursor tests use a small Cursor profile, for example a `--user-data-dir` account folder (Menu -> *Cursor backup profiles...* or `--profile label=<dir>\User`), and copy `<profile>\User\globalStorage\state.vscdb` first.
+- Step 9 service: `Get-ScheduledTask 'ChatBridge Auto-Sync'`; the log is `%LOCALAPPDATA%\ChatBridge\watch.log`; remove with `install.ps1 -Uninstall`.
+- Step 12: `install.ps1 -Uninstall`, then install again; links and journals stay in `%LOCALAPPDATA%\ChatBridge`.
+- Windows-specific checks:
+  - [ ] a chat sent from Claude to Cursor appears under the right project in Cursor's sidebar, and the project is in *Recent projects* after Cursor starts;
+  - [ ] a chat imported into Claude opens in the Claude app with the folder shown as `C:\...`;
+  - [ ] projects in folders with spaces or non-ASCII characters work.
+
 ## 1. Install
 
 ```bash
-sudo apt install ./chatbridge_1.1.2_all.deb       # from dist/ or the CI artifact
+sudo apt install ./chatbridge_1.2.0_all.deb       # from dist/ or the CI artifact
 chatbridge doctor
 man chatbridge | head
 ```
@@ -121,7 +135,7 @@ Turn on **Auto-sync** (header switch).
 
 ```bash
 sudo apt remove chatbridge     # data in ~/.local/share/chatbridge and ~/.config/chatbridge stays
-sudo apt install ./chatbridge_1.1.2_all.deb
+sudo apt install ./chatbridge_1.2.0_all.deb
 ```
 
 - [ ] After reinstalling, links and Activity history are still there (conversations still show **In sync**).
@@ -130,6 +144,7 @@ sudo apt install ./chatbridge_1.1.2_all.deb
 ## What to send me when something fails
 
 - Output of `chatbridge doctor`.
+- On Windows also `%LOCALAPPDATA%\ChatBridge\chatbridge-gui.log` (the windowed launcher has no console).
 - The terminal output of `chatbridge-gui` (or `journalctl --user -u chatbridge-sync`).
 - For Cursor writes: the journal file named in the Activity page / sync output (`~/.local/share/chatbridge/journal/*.json`). It stores the previous chat record, which includes short previews of earlier messages, so review it and share it privately, not in a public issue.
 - A screenshot of how Cursor/Claude displays the problem.

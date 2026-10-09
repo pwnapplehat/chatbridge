@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
 
 from .model import AssistantText, Event, Reasoning, ToolCall, UserText
+from .osenv import local_moment
 
 CHARS_PER_TOKEN = 4
 FULL_BUDGET_TOKENS = 120_000
@@ -99,7 +99,7 @@ class CompactionPlan:
 
 
 def _day(ts_ms: int) -> str:
-    return datetime.fromtimestamp(ts_ms / 1000).strftime("%Y-%m-%d") if ts_ms else "?"
+    return local_moment(ts_ms).strftime("%Y-%m-%d") if ts_ms else "?"
 
 
 def plan_compaction(scan: EventScan, title: str, source: str) -> CompactionPlan | None:

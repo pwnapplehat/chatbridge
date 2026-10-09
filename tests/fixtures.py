@@ -14,6 +14,7 @@ from pathlib import Path
 
 from chatbridge.config import AppPaths
 from chatbridge.cursor_source import CursorProfile
+from chatbridge.osenv import path_to_uri
 
 CHAT_MAIN = "11111111-aaaa-4aaa-8aaa-000000000001"
 CHAT_SUB = "22222222-aaaa-4aaa-8aaa-000000000002"
@@ -118,7 +119,9 @@ def build_world(root: Path) -> World:
     live_user = root / "cursor" / "User"
     backup_user = root / "backup" / "User"
     (live_user / "workspaceStorage" / "ws1").mkdir(parents=True)
-    (live_user / "workspaceStorage" / "ws1" / "workspace.json").write_text(json.dumps({"folder": f"file://{project}"}), encoding="utf-8")
+    (live_user / "workspaceStorage" / "ws1" / "workspace.json").write_text(
+        json.dumps({"folder": path_to_uri(str(project))}), encoding="utf-8"
+    )
 
     live = _new_db(live_user / "globalStorage" / "state.vscdb")
     add_chat(live, CHAT_MAIN, "Fix the parser", main_chat_bubbles(), [0, 4, 5, 6], "ws1", project)

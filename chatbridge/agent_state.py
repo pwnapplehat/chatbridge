@@ -19,9 +19,9 @@ import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
 
 from .model import AssistantText, Event, JsonObj, ToolCall, UserText, as_obj, as_str
+from .osenv import local_moment
 from .protobuf import field_bytes, field_varint, parse_fields
 
 BLOB_KEY = "agentKv:blob:"
@@ -102,7 +102,7 @@ def find_prefix(conn: sqlite3.Connection, own_ids: set[str] | None = None) -> li
 
 
 def _stamp(ts_ms: int) -> str:
-    moment = datetime.fromtimestamp(ts_ms / 1000).astimezone()
+    moment = local_moment(ts_ms)
     offset = moment.utcoffset()
     minutes = int(offset.total_seconds() // 60) if offset else 0
     sign, minutes = ("+" if minutes >= 0 else "-"), abs(minutes)

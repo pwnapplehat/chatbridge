@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.0
+
+- **Windows support** (Windows 10 / 11, Python 3.11+): every feature of the Linux version works, on the same engine. Verified against a real Cursor 3.24 and Claude desktop app on Windows 11: a 66 MB / 12.5 million token chat imported with zero mismatches, a Claude session sent to Cursor (filed under the right workspace, added to recent projects) and undone.
+- New native Windows app (Tk, ships with Python, no extra install): conversation list with sync states, filters, detail pane with preview, Compare / Sync / Stop syncing, bulk Compare and Sync with progress and cancel, Activity page with Undo, auto-sync, "Cursor is open" banner, backup-profile manager, carry-context toggle. Linux keeps the GTK4 / libadwaita app; `chatbridge-gui` picks the right one.
+- `install.ps1` / `install.cmd`: per-user install (virtual environment, `chatbridge` / `chatbridge-gui` on PATH, Start Menu shortcut), `-Service` for hidden auto-sync at logon (Task Scheduler, with a Startup-folder fallback), `-Uninstall`. `scripts/check.ps1` is the Windows quality gate; CI now also runs on Windows.
+- Locations: Cursor `%APPDATA%\Cursor\User`, Claude `%APPDATA%\Claude\claude-code-sessions` (the Microsoft Store build is detected too), ChatBridge settings `%APPDATA%\ChatBridge`, data `%LOCALAPPDATA%\ChatBridge`. A running Cursor started with `--user-data-dir` (several accounts) is detected per profile, and `doctor` warns about running Cursor data folders it does not scan. `CHATBRIDGE_CURSOR_ACCOUNTS` overrides `~/.cursor-accounts`.
+- Cursor workspace ids on Windows (`md5(lower-case path + folder creation time)`, checked against every workspace in a real profile), `file:///c%3A/...` URIs, `c:\` `fsPath` records and recent-projects entries are written exactly the way Cursor writes them; Claude project folders and session records use `C:\` paths like Claude does.
+- Files are always written with Unix newlines (never CRLF) and replaced atomically, with a retry when Windows briefly locks them. SQLite URIs are built safely for folders with spaces, `#` or `%`.
+- Fix: timestamps before 1970 no longer crash on Windows (`OSError`); console output never fails on characters the console cannot show; new `watch --log-file` for background runs.
+- Internal: `osenv.py` is the single home of platform differences; `gui_common.py` shares wording between the GTK and Tk apps.
+
 ## 1.1.2
 
 - Fix: after deleting one side of a pair (for example the Claude session), the surviving chat showed "Counterpart missing" and "Stop syncing" did nothing (it looked for the missing side to find the link). A link whose other side is gone is now ignored: the survivor is listed as "Only in Cursor" / "Only in Claude" and can be imported again (the stale link is replaced). "Stop syncing" removes the link by its own key.

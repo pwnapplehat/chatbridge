@@ -12,14 +12,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, GLib, Gtk  # noqa: E402
 
 from ..config import Settings  # noqa: E402
-
-
-def find_user_dir(chosen: Path) -> Path | None:
-    """Accept either a Cursor 'User' folder or its parent; return the folder that holds globalStorage/state.vscdb."""
-    for candidate in (chosen, chosen / "User", chosen / "User" / "User"):
-        if (candidate / "globalStorage" / "state.vscdb").is_file():
-            return candidate
-    return None
+from ..gui_common import find_user_dir  # noqa: E402
 
 
 class ProfilesDialog(Adw.Dialog):
