@@ -13,6 +13,18 @@ from chatbridge.config import Settings
 from chatbridge.service import ImportService
 from tests.fixtures import World, build_world
 
+# GUI test modules import their toolkit at module level, so they are not even collected where it is missing
+# (Tk is optional on Linux distributions; GTK is not available on Windows).
+collect_ignore: list[str] = []
+try:
+    import tkinter  # noqa: F401
+except ImportError:
+    collect_ignore.append("test_tk_gui_e2e.py")
+try:
+    import gi  # noqa: F401
+except ImportError:
+    collect_ignore.append("test_gui_e2e.py")
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Windows limits paths to 260 characters and Claude's project folder name repeats the whole project path, so keep test paths short."""
